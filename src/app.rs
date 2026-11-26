@@ -413,6 +413,10 @@ impl RustudioApp {
         let wayland = cc.window_handle().ok().map(|h| matches!(h.as_raw(), RawWindowHandle::Wayland(_)));
         let mut app = Self::new_in(&cc.egui_ctx, cc.wgpu_render_state.clone(), wayland, open, harness, demo);
         app.ed.plugins.set_repaint_context(cc.egui_ctx.clone());
+        // The launch guard switched this launch to OpenGL (launch_guard.rs).
+        if let Some(notice) = rustudio_core::launch_guard::take_notice() {
+            app.ed.warn(notice);
+        }
         rustudio_core::load_trace::mark("app created");
         app
     }
@@ -2269,6 +2273,8 @@ impl eframe::App for RustudioApp {
             self.egui_ctx = Some(ui.ctx().clone());
         }
         self.frame(ui);
+        // The window is drawing: this launch made it (launch_guard.rs).
+        rustudio_core::launch_guard::frame_drawn();
     }
 }
 

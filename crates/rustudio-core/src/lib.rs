@@ -46,6 +46,7 @@ pub mod editable_source;
 pub mod attachment;
 pub mod game_settings;
 pub mod rustudio_settings;
+pub mod launch_guard;
 pub mod fbx;
 pub mod fbx_anim;
 pub mod api;

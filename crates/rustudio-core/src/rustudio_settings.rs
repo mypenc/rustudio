@@ -262,6 +262,7 @@ pub const OPTS: &[Opt] = &[
     Opt { key: "bloom", cat: "Performance", label: "Glow effects", desc: "Controls the bloom glow around bright surfaces.", env: "RUSTUDIO_PERF_BLOOM", kind: OptKind::Choice(&[("on", "On"), ("off", "Off")]) },
     Opt { key: "fps", cat: "Performance", label: "Editor frame limit", desc: "Limits scheduled editor and playtest redraws. Input and window changes can redraw immediately.", env: "RUSTUDIO_PERF_FPS", kind: OptKind::Choice(FPS_PRESETS) },
     Opt { key: "present", cat: "Performance", label: "Presentation", desc: "Low latency shows each finished frame at the next screen refresh without waiting for one, like Studio, and paces redraws to the frame limit (the screen's refresh rate when Unlimited). Wait for vsync blocks each frame on the refresh. Applies after a restart.", env: "RUSTUDIO_PERF_PRESENT", kind: OptKind::Choice(&[("mailbox", "Low latency"), ("fifo", "Wait for vsync")]) },
+    Opt { key: "graphics_api", cat: "Performance", label: "Graphics API", desc: "Which graphics API the window draws with. Automatic uses the best one the driver offers (Vulkan, DirectX 12, Metal). OpenGL is for older graphics drivers that crash with those, such as Intel HD and UHD graphics from 2015-2020: rustudio switches to it by itself when a launch never got as far as drawing its window. WGPU_BACKEND overrides this. Applies after a restart.", env: "RUSTUDIO_PERF_GRAPHICS", kind: OptKind::Choice(&[("auto", "Automatic"), ("gl", "OpenGL (compatibility)")]) },
     Opt { key: "idle", cat: "Performance", label: "Idle grass animation", desc: "Pauses grass animation redraws while the editor is idle.", env: "RUSTUDIO_PERF_IDLE", kind: OptKind::Choice(&[("animate", "Animate"), ("pause", "Pause when idle")]) },
     Opt { key: "background", cat: "Performance", label: "Hidden window", desc: "Keeps a running playtest and Team Create going while the window is on another workspace or minimized, without drawing (as Studio does behind other windows). Pause freezes them until the window shows again.", env: "RUSTUDIO_PERF_BACKGROUND", kind: OptKind::Choice(&[("run", "Keep running"), ("pause", "Pause")]) },
     Opt {
@@ -816,7 +817,7 @@ pub fn overridden_by(o: &Opt) -> Option<&'static str> {
 
 /// Options read once at startup (or when a place opens): changing one shows
 /// "Restart" beside its label until the app restarts.
-const RESTART_KEYS: &[&str] = &["present", "builtin_plugins"];
+const RESTART_KEYS: &[&str] = &["present", "graphics_api", "builtin_plugins"];
 
 static FIRST_SHOWN: std::sync::Mutex<Option<std::collections::HashMap<&'static str, String>>> =
     std::sync::Mutex::new(None);
@@ -990,6 +991,20 @@ mod tests {
         set_choice("present", if start { "fifo" } else { "mailbox" }, "mailbox");
         assert!(!restart_pending(o));
         assert!(!restart_pending(opt("core_scripts")));
+    }
+
+    /// Graphics API is read when the window opens, so a change shows "Restart"
+    /// (the launch guard saves OpenGL through the same option).
+    #[test]
+    fn graphics_api_is_a_restart_option() {
+        let o = opt("graphics_api");
+        assert!(matches!(o.kind, OptKind::Choice(c) if c[0].0 == "auto" && c[1].0 == "gl"));
+        let start = matches!(shown(o), Shown::Choice(1));
+        assert!(!restart_pending(o));
+        set_choice("graphics_api", if start { "auto" } else { "gl" }, "auto");
+        assert!(restart_pending(o));
+        set_choice("graphics_api", if start { "gl" } else { "auto" }, "auto");
+        assert!(!restart_pending(o));
     }
 
     #[test]
