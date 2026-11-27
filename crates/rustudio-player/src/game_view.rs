@@ -2239,6 +2239,9 @@ impl Game {
             self.quality_frame_at = None;
         }
         let quality = self.quality_profile();
+        // Material packs are only fetched while the shader samples them
+        // (matpack::maps_wanted_for): a weak GPU's Automatic level doesn't.
+        rustudio_render::matpack::set_maps_wanted(rustudio_render::matpack::maps_wanted_for(quality));
         // WireframeHandleAdornments (domains/world_misc.rs).
         let (wire_lines, wire_texts) = rustudio_engine::runtime::domains::world::misc::wire_geometry(&self.doc);
         lines.extend(wire_lines.into_iter().map(|(pos, color)| LineVertex { pos, color }));
