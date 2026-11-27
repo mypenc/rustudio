@@ -8,6 +8,12 @@ name: Studio content
 
 on:
   workflow_dispatch:
+  # (a fork's workflows are only runnable by hand from the default branch: on
+  # another branch, pushing a change to this file runs it, and "Re-run all
+  # jobs" on that run runs it again)
+  push:
+    branches: [fix/launch-guard-opengl-fallback]
+    paths: ['.github/workflows/studio-content.yml']
 
 permissions:
   contents: write
