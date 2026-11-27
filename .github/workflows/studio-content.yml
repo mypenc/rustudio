@@ -26,19 +26,25 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      - name: Build the downloader
+        run: cargo build --release --locked -p rustudio-core --example export_studio_content
+
       - name: Download Studio's content from Roblox's CDN
         run: |
           stage="$RUNNER_TEMP/stage"
-          mkdir -p "$stage"
-          # rustudio keeps its downloads under the data folder: stage it.
-          export XDG_DATA_HOME="$stage/data" XDG_CACHE_HOME="$stage/cache" \
-                 XDG_CONFIG_HOME="$stage/config" XDG_STATE_HOME="$stage/state"
-          cargo run --release --locked -p rustudio-core --example export_studio_content
+          mkdir -p "$stage/home"
+          # rustudio keeps its downloads under $HOME/.local/share on Linux, so a
+          # throwaway HOME (for this one program only) stages exactly that tree.
+          HOME="$stage/home" XDG_CACHE_HOME="$stage/cache" \
+            XDG_CONFIG_HOME="$stage/config" XDG_STATE_HOME="$stage/state" \
+            ./target/release/examples/export_studio_content
+          find "$stage/home" -maxdepth 4 | head -20
 
       - name: Zip it
         id: zip
         run: |
-          cd "$RUNNER_TEMP/stage/data/rustudio"
+          cd "$RUNNER_TEMP/stage/home/.local/share/rustudio"
+          ls -la . studio classic-sounds
           test -f studio/.rustudio-studio-version
           test -f classic-sounds/uuhhh.mp3
           files=$(find studio classic-sounds -type f | wc -l)
