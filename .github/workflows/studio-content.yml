@@ -1,8 +1,9 @@
 name: Studio content
 
 # For a machine with no internet: run this by hand (Actions > Studio content >
-# Run workflow). It downloads Studio's built-in content from Roblox's CDN, the
-# same files rustudio fetches on a first launch, and zips them. Copy the zip to
+# Run workflow). It downloads Studio's built-in content from Roblox's CDN and
+# the part / terrain material textures from asset delivery, the same files
+# rustudio fetches on a first launch, and zips them. Copy the zip to
 # the offline machine and use File > Import Studio Content… (or
 # `rustudio --import-studio-content studio-content.zip`).
 
@@ -27,7 +28,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build the downloader
-        run: cargo build --release --locked -p rustudio-core --example export_studio_content
+        run: cargo build --release --locked -p rustudio-core --example export_studio_content --example prefetch_packs
 
       - name: Download Studio's content from Roblox's CDN
         run: |
@@ -56,11 +57,49 @@ jobs:
           test "$(stat -c %s "$GITHUB_WORKSPACE/studio-content.zip")" -lt 4000000000
           echo "version=$(cut -d' ' -f1 studio/.rustudio-studio-version)" >> "$GITHUB_OUTPUT"
 
+      # Part and terrain material textures are not in Studio's packages: rustudio
+      # downloads each material's texture pack from asset delivery on first use
+      # and keeps it in its cache. Offline, that cache is empty and every
+      # material draws as one flat colour, so fill it here. Two zips (File >
+      # Import Studio Content… reads a whole zip into memory).
+      - name: Download the part material textures
+        run: |
+          stage="$RUNNER_TEMP/stage/parts"
+          mkdir -p "$stage"
+          ids=$(python3 tools/material_pack_ids.py parts)
+          RUSTUDIO_CACHE_DIR="$stage/cache" ./target/release/examples/prefetch_packs $ids
+          cd "$stage"
+          files=$(find cache/assets -type f | wc -l)
+          echo "$files files"
+          test "$files" -gt 100
+          test "$files" -lt 60000
+          zip -r -q -X -0 "$GITHUB_WORKSPACE/material-textures-parts.zip" cache/assets
+          ls -l "$GITHUB_WORKSPACE/material-textures-parts.zip"
+          test "$(stat -c %s "$GITHUB_WORKSPACE/material-textures-parts.zip")" -lt 4000000000
+
+      - name: Download the terrain material textures
+        run: |
+          stage="$RUNNER_TEMP/stage/terrain"
+          mkdir -p "$stage"
+          ids=$(python3 tools/material_pack_ids.py terrain)
+          RUSTUDIO_CACHE_DIR="$stage/cache" ./target/release/examples/prefetch_packs $ids
+          cd "$stage"
+          files=$(find cache/assets -type f | wc -l)
+          echo "$files files"
+          test "$files" -gt 50
+          test "$files" -lt 60000
+          zip -r -q -X -0 "$GITHUB_WORKSPACE/material-textures-terrain.zip" cache/assets
+          ls -l "$GITHUB_WORKSPACE/material-textures-terrain.zip"
+          test "$(stat -c %s "$GITHUB_WORKSPACE/material-textures-terrain.zip")" -lt 4000000000
+
       - name: Keep it as a workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: studio-content
-          path: studio-content.zip
+          path: |
+            studio-content.zip
+            material-textures-parts.zip
+            material-textures-terrain.zip
           compression-level: 0
           retention-days: 30
 
@@ -71,8 +110,8 @@ jobs:
           VERSION: ${{ steps.zip.outputs.version }}
         run: |
           tag="studio-content-$VERSION"
-          gh release create "$tag" studio-content.zip \
+          gh release create "$tag" studio-content.zip material-textures-parts.zip material-textures-terrain.zip \
             --target "$GITHUB_SHA" --prerelease \
             --title "Studio content $VERSION" \
-            --notes "Roblox Studio's built-in content ($VERSION) for rustudio on a machine with no internet. Download studio-content.zip, copy it over, then File > Import Studio Content…" \
-            || gh release upload "$tag" studio-content.zip --clobber
+            --notes "Roblox Studio's built-in content ($VERSION) for rustudio on a machine with no internet. Download the zips, copy them over, then File > Import Studio Content… for each: studio-content.zip, material-textures-parts.zip, material-textures-terrain.zip" \
+            || gh release upload "$tag" studio-content.zip material-textures-parts.zip material-textures-terrain.zip --clobber

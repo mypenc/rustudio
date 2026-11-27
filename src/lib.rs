@@ -565,7 +565,7 @@ pub fn run() -> eframe::Result<()> {
             std::process::exit(2);
         };
         let (ok, message) = match rustudio_core::studio_content::import_zip(std::path::Path::new(&zip), &|s| eprintln!("studio content: {s}")) {
-            Ok(v) => (true, format!("Studio content {v} imported into {}.", rustudio_core::studio_content::install_dir().display())),
+            Ok(summary) => (true, format!("Imported {summary}.")),
             Err(e) => (false, format!("Couldn't import Studio content: {e}")),
         };
         eprintln!("studio content: {message}");

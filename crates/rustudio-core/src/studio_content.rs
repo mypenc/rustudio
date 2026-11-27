@@ -393,67 +393,99 @@ pub fn install(progress: &dyn Fn(&str)) -> Result<String, String> {
     Ok(version)
 }
 
-/// Import the zip the "Studio content" workflow makes
+/// Import a zip the "Studio content" workflow makes
 /// (`.github/workflows/studio-content.yml`), for a machine with no internet:
-/// `studio/…` becomes the downloaded Studio content (`install_dir()`) and
-/// `classic-sounds/…` the classic Oof's folder, exactly what `install` and
-/// `fetch_classic_oof` leave. Returns the Studio version imported.
+/// - `studio/…` becomes the downloaded Studio content (`install_dir()`),
+/// - `classic-sounds/…` the classic Oof's folder,
+/// - `cache/…` goes into rustudio's cache folder (`assets::cache_dir()`),
+///   where the part and terrain material textures wait for a download.
+///
+/// What `install`, `fetch_classic_oof` and the asset cache leave. Returns a
+/// summary of what was imported.
 pub fn import_zip(path: &Path, progress: &dyn Fn(&str)) -> Result<String, String> {
     let classic_dir = classic_oof().parent().map(Path::to_path_buf).ok_or("bad data dir")?;
-    import_zip_to(path, &install_dir(), &classic_dir, progress)
+    import_zip_to(path, &install_dir(), &classic_dir, &crate::assets::cache_dir(), progress)
 }
 
 /// `import_zip` into the given folders; a zip that isn't complete or has a
-/// path that would leave them changes nothing.
-fn import_zip_to(path: &Path, dest: &Path, classic_dir: &Path, progress: &dyn Fn(&str)) -> Result<String, String> {
+/// path that would leave them changes nothing under `studio/`.
+fn import_zip_to(path: &Path, dest: &Path, classic_dir: &Path, cache_dir: &Path, progress: &dyn Fn(&str)) -> Result<String, String> {
     progress(&format!("reading {}", path.display()));
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let zip = Zip::parse(&bytes).map_err(|e| format!("{}: not a zip ({e})", path.display()))?;
-    let marker = format!("studio/{MARKER}");
-    if !zip.entries.iter().any(|e| e.name.replace('\\', "/") == marker) {
-        return Err(format!("{} isn't Studio content made by the rustudio workflow (no {marker} inside)", path.display()));
+    let names: Vec<String> = zip.entries.iter().map(|e| e.name.replace('\\', "/")).collect();
+    let has_studio = names.iter().any(|n| n.starts_with("studio/"));
+    let has_cache = names.iter().any(|n| n.starts_with("cache/") && !n.ends_with('/'));
+    if !has_studio && !has_cache {
+        return Err(format!("{} isn't content made by the rustudio workflow (no studio/ or cache/ inside)", path.display()));
     }
-    let parent = dest.parent().ok_or("bad install dir")?;
-    std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-    let partial = parent.join(format!(".studio-partial-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&partial);
+    let marker = format!("studio/{MARKER}");
+    if has_studio && !names.iter().any(|n| *n == marker) {
+        return Err(format!("{} has no {marker}: its Studio content isn't complete", path.display()));
+    }
+    let partial = if has_studio {
+        let parent = dest.parent().ok_or("bad install dir")?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+        let partial = parent.join(format!(".studio-partial-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&partial);
+        Some(partial)
+    } else {
+        None
+    };
 
     let mut classic: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut cached = 0usize;
     let result = (|| -> Result<(), String> {
-        for e in &zip.entries {
-            if e.name.ends_with(['/', '\\']) {
+        for (e, name) in zip.entries.iter().zip(&names) {
+            if name.ends_with('/') {
                 continue;
             }
-            let name = e.name.replace('\\', "/");
-            if let Some(rest) = name.strip_prefix("studio/") {
+            if let (Some(rest), Some(partial)) = (name.strip_prefix("studio/"), &partial) {
                 let data = zip.read(&bytes, e).map_err(|err| format!("{}: {err}", e.name))?;
-                write_file(&partial, rest, &data)?;
+                write_file(partial, rest, &data)?;
             } else if let Some(rest) = name.strip_prefix("classic-sounds/") {
                 let data = zip.read(&bytes, e).map_err(|err| format!("{}: {err}", e.name))?;
                 classic.push((rest.to_string(), data));
+            } else if let Some(rest) = name.strip_prefix("cache/") {
+                let data = zip.read(&bytes, e).map_err(|err| format!("{}: {err}", e.name))?;
+                write_file_atomic(cache_dir, rest, &data)?;
+                cached += 1;
+                if cached % 20 == 0 {
+                    progress(&format!("{cached} cached files"));
+                }
             }
         }
-        if partial.join(MARKER).is_file() {
-            Ok(())
-        } else {
-            Err("the zip has no complete Studio content".into())
+        match &partial {
+            Some(p) if !p.join(MARKER).is_file() => Err("the zip has no complete Studio content".into()),
+            _ => Ok(()),
         }
     })();
     if let Err(e) = result {
-        let _ = std::fs::remove_dir_all(&partial);
+        if let Some(p) = &partial {
+            let _ = std::fs::remove_dir_all(p);
+        }
         return Err(e);
     }
-    let _ = std::fs::remove_dir_all(dest);
-    std::fs::rename(&partial, dest).map_err(|e| format!("{}: {e}", dest.display()))?;
-    for (name, data) in classic {
-        write_file(classic_dir, &name, &data)?;
+    let mut summary = Vec::new();
+    if let Some(partial) = &partial {
+        let _ = std::fs::remove_dir_all(dest);
+        std::fs::rename(partial, dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+        let version = std::fs::read_to_string(dest.join(MARKER))
+            .ok()
+            .and_then(|m| m.split_whitespace().next().map(str::to_string))
+            .unwrap_or_default();
+        summary.push(format!("Studio content {version} into {}", dest.display()));
     }
-    let version = std::fs::read_to_string(dest.join(MARKER))
-        .ok()
-        .and_then(|m| m.split_whitespace().next().map(str::to_string))
-        .unwrap_or_default();
-    progress(&format!("imported into {}", dest.display()));
-    Ok(version)
+    if !classic.is_empty() {
+        for (name, data) in classic {
+            write_file(classic_dir, &name, &data)?;
+        }
+        summary.push("the classic death sound".to_string());
+    }
+    if cached > 0 {
+        summary.push(format!("{cached} cached asset files (material textures) into {}", cache_dir.display()));
+    }
+    Ok(summary.join("; "))
 }
 
 /// `import_zip` on a background thread, reporting to Output (the File menu's
@@ -462,10 +494,7 @@ pub fn spawn_import(path: PathBuf) {
     let _ = std::thread::Builder::new().name("studio-content-import".into()).spawn(move || {
         post(false, format!("Importing Studio content from {}…", path.display()));
         match import_zip(&path, &|_| {}) {
-            Ok(v) => post(false, format!(
-                "Studio content {v} imported into {}. Restart rustudio to use Studio's fonts everywhere.",
-                install_dir().display()
-            )),
+            Ok(summary) => post(false, format!("Imported {summary}. Restart rustudio to use it everywhere.")),
             Err(e) => post(true, format!("Couldn't import Studio content: {e}")),
         }
     });
@@ -473,7 +502,7 @@ pub fn spawn_import(path: PathBuf) {
 
 /// Write `name` (a zip path, `\` or `/` separated) under `root`, refusing
 /// anything that would land outside it.
-fn write_file(root: &Path, name: &str, data: &[u8]) -> Result<(), String> {
+fn safe_join(root: &Path, name: &str) -> Result<PathBuf, String> {
     let mut path = root.to_path_buf();
     for part in name.split(['\\', '/']) {
         match part {
@@ -483,6 +512,11 @@ fn write_file(root: &Path, name: &str, data: &[u8]) -> Result<(), String> {
             p => path.push(p),
         }
     }
+    Ok(path)
+}
+
+fn write_file(root: &Path, name: &str, data: &[u8]) -> Result<(), String> {
+    let path = safe_join(root, name)?;
     if path == root {
         return Ok(());
     }
@@ -490,6 +524,23 @@ fn write_file(root: &Path, name: &str, data: &[u8]) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
     std::fs::write(&path, data).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// `write_file` that never leaves half a file under the final name (the
+/// asset cache treats any file there as a complete download).
+fn write_file_atomic(root: &Path, name: &str, data: &[u8]) -> Result<(), String> {
+    let path = safe_join(root, name)?;
+    if path == root {
+        return Ok(());
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    let mut tmp = path.clone().into_os_string();
+    tmp.push(".part");
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, data).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// One file out of a remote zip: the end record, the central directory and
@@ -705,10 +756,32 @@ mod tests {
         let (dest, classic) = (d.join("data/studio"), d.join("data/classic-sounds"));
         std::fs::create_dir_all(&dest).unwrap();
         std::fs::write(dest.join("old.txt"), "stale").unwrap();
-        assert_eq!(import_zip_to(&zip, &dest, &classic, &|_| {}).unwrap(), "version-abc");
+        let summary = import_zip_to(&zip, &dest, &classic, &d.join("cache"), &|_| {}).unwrap();
+        assert!(summary.contains("version-abc") && summary.contains("classic death sound"), "{summary}");
         assert_eq!(std::fs::read(dest.join("content/fonts/a.ttf")).unwrap(), b"font");
         assert!(!dest.join("old.txt").exists(), "the previous content is replaced");
         assert_eq!(std::fs::read(classic.join("uuhhh.mp3")).unwrap(), b"oof");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A cache-only zip (the material textures) fills the asset cache and
+    /// touches nothing else; a file path out of the folder is refused.
+    #[test]
+    fn imports_a_cache_only_zip() {
+        let d = temp("cache");
+        let (dest, classic, cache) = (d.join("data/studio"), d.join("data/classic-sounds"), d.join("cache"));
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("keep.txt"), "kept").unwrap();
+        let zip = d.join("materials.zip");
+        std::fs::write(&zip, stored_zip(&[("cache/assets/123_vlatest.bin", b"png"), ("cache/assets/456_vlatest.bin", b"xml")])).unwrap();
+        let summary = import_zip_to(&zip, &dest, &classic, &cache, &|_| {}).unwrap();
+        assert!(summary.contains("2 cached asset files"), "{summary}");
+        assert_eq!(std::fs::read(cache.join("assets/123_vlatest.bin")).unwrap(), b"png");
+        assert!(!cache.join("assets/123_vlatest.bin.part").exists());
+        assert_eq!(std::fs::read_to_string(dest.join("keep.txt")).unwrap(), "kept", "Studio content untouched");
+        std::fs::write(&zip, stored_zip(&[("cache/../evil.bin", b"x")])).unwrap();
+        assert!(import_zip_to(&zip, &dest, &classic, &cache, &|_| {}).is_err());
+        assert!(!d.join("evil.bin").exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -729,7 +802,7 @@ mod tests {
         ] {
             let zip = d.join(name);
             std::fs::write(&zip, files).unwrap();
-            assert!(import_zip_to(&zip, &dest, &classic, &|_| {}).is_err(), "{name}");
+            assert!(import_zip_to(&zip, &dest, &classic, &d.join("cache"), &|_| {}).is_err(), "{name}");
             assert_eq!(std::fs::read_to_string(dest.join("keep.txt")).unwrap(), "kept", "{name}");
         }
         assert!(!d.join("data/evil.txt").exists());
