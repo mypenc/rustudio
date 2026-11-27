@@ -1,0 +1,66 @@
+name: Studio content
+
+# For a machine with no internet: run this by hand (Actions > Studio content >
+# Run workflow). It downloads Studio's built-in content from Roblox's CDN, the
+# same files rustudio fetches on a first launch, and zips them. Copy the zip to
+# the offline machine and use File > Import Studio Content… (or
+# `rustudio --import-studio-content studio-content.zip`).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Download Studio's content from Roblox's CDN
+        run: |
+          stage="$RUNNER_TEMP/stage"
+          mkdir -p "$stage"
+          # rustudio keeps its downloads under the data folder: stage it.
+          export XDG_DATA_HOME="$stage/data" XDG_CACHE_HOME="$stage/cache" \
+                 XDG_CONFIG_HOME="$stage/config" XDG_STATE_HOME="$stage/state"
+          cargo run --release --locked -p rustudio-core --example export_studio_content
+
+      - name: Zip it
+        id: zip
+        run: |
+          cd "$RUNNER_TEMP/stage/data/rustudio"
+          test -f studio/.rustudio-studio-version
+          test -f classic-sounds/uuhhh.mp3
+          files=$(find studio classic-sounds -type f | wc -l)
+          echo "$files files"
+          # (rustudio's zip reader has no zip64: a bigger zip must be split)
+          test "$files" -lt 60000
+          zip -r -q -X "$GITHUB_WORKSPACE/studio-content.zip" studio classic-sounds
+          ls -l "$GITHUB_WORKSPACE/studio-content.zip"
+          test "$(stat -c %s "$GITHUB_WORKSPACE/studio-content.zip")" -lt 4000000000
+          echo "version=$(cut -d' ' -f1 studio/.rustudio-studio-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Keep it as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: studio-content
+          path: studio-content.zip
+          compression-level: 0
+          retention-days: 30
+
+      # A release asset is one plain .zip (an artifact is a zip around the zip).
+      - name: Publish it as a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.zip.outputs.version }}
+        run: |
+          tag="studio-content-$VERSION"
+          gh release create "$tag" studio-content.zip \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "Studio content $VERSION" \
+            --notes "Roblox Studio's built-in content ($VERSION) for rustudio on a machine with no internet. Download studio-content.zip, copy it over, then File > Import Studio Content…" \
+            || gh release upload "$tag" studio-content.zip --clobber

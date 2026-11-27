@@ -221,6 +221,7 @@ tools (no window; each exits when done):
   --script PLACE PATTERN  print the scripts whose full name contains PATTERN
   --fetch-assets DIR ID…  download public assets by id into DIR
   --install-studio-content  download Studio's built-in content from Roblox's CDN
+  --import-studio-content ZIP  unpack the offline Studio content zip (no internet needed)
   --list-plugins [--json]   the local and installed plugins rustudio would load
   --install-plugin ID       Get (free) + download a Creator Store plugin; --update-plugin ID
   --uninstall-plugin ID     remove an installed plugin from rustudio
@@ -554,6 +555,28 @@ pub fn run() -> eframe::Result<()> {
                 std::process::exit(1);
             }
         }
+    }
+    // `--import-studio-content FILE.zip`: unpack the zip the "Studio content"
+    // workflow makes (for a machine with no internet), then exit. A release
+    // build on Windows has no console, so the answer is also a message box.
+    if let Some(i) = std::env::args().position(|a| a == "--import-studio-content") {
+        let Some(zip) = std::env::args().nth(i + 1) else {
+            eprintln!("--import-studio-content needs the zip's path");
+            std::process::exit(2);
+        };
+        let (ok, message) = match rustudio_core::studio_content::import_zip(std::path::Path::new(&zip), &|s| eprintln!("studio content: {s}")) {
+            Ok(v) => (true, format!("Studio content {v} imported into {}.", rustudio_core::studio_content::install_dir().display())),
+            Err(e) => (false, format!("Couldn't import Studio content: {e}")),
+        };
+        eprintln!("studio content: {message}");
+        if std::env::var_os("RUSTUDIO_NO_DIALOG").is_none() {
+            rfd::MessageDialog::new()
+                .set_level(if ok { rfd::MessageLevel::Info } else { rfd::MessageLevel::Error })
+                .set_title("rustudio")
+                .set_description(message)
+                .show();
+        }
+        std::process::exit(if ok { 0 } else { 1 });
     }
     // `--write-corpus DIR`: the fidelity corpus's place files, then exit.
     let argv: Vec<String> = std::env::args().collect();

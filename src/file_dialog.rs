@@ -43,6 +43,8 @@ pub enum Purpose {
     AnimImportRbxm,
     /// Animation Editor > Export > Export to File (.rbxm)…
     AnimExportRbxm,
+    /// File > Import Studio Content…: the zip the "Studio content" workflow makes.
+    ImportStudioContent,
 }
 
 pub enum Kind {

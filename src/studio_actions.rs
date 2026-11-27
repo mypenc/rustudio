@@ -74,7 +74,7 @@ impl Editor {
         let edit = !playing;
         let open = |n: &str| Some(self.ui.panels_open.contains(n));
         match a {
-            "new" | "open" | "open_roblox" | "open_folder" | "close_place" | "import_model" => (edit, None),
+            "new" | "open" | "open_roblox" | "open_folder" | "close_place" | "import_model" | "import_studio_content" => (edit, None),
             "import_3d" => {
                 if self.builtin_tools.plugins_enabled {
                     let (en, ck) = self.builtin_button_state("AssetImporter", Some("Mesh Importer"), Some("Import"));
@@ -434,6 +434,7 @@ impl Editor {
             "close_place" => self.request(PendingAction::Close),
             "open" => self.request(PendingAction::Open(None)),
             "open_folder" => self.request(PendingAction::OpenFolder),
+            "import_studio_content" => self.import_studio_content_dialog(),
             "export_project" => self.open_export_dialog(),
             "project_settings" => self.open_settings_dialog(),
             "open_roblox" => {

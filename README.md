@@ -95,6 +95,16 @@ can use that instead:
 export RUSTUDIO_STUDIO_DIR=~/.var/app/org.vinegarhq.Vinegar/data/vinegar/versions/version-XXXX
 ```
 
+#### No internet on the machine
+
+Run the **Studio content** workflow (Actions tab > Studio content > Run
+workflow) on GitHub. It downloads the same content and publishes
+`studio-content.zip` as a release asset (and a workflow artifact). Copy the
+zip to the offline machine, then use **File > Import Studio Content…** or
+`rustudio --import-studio-content studio-content.zip`, and restart rustudio.
+Assets that belong to a particular place (a model or sound by id) still need
+the internet the first time they're used.
+
 ## Platforms
 
 | Platform | Status |

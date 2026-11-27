@@ -975,6 +975,14 @@ impl Editor {
         }
     }
 
+    /// File > Import Studio Content…: for a machine with no internet, the zip
+    /// the "Studio content" workflow makes (rustudio_core::studio_content).
+    pub fn import_studio_content_dialog(&mut self) {
+        use crate::file_dialog::{Kind, Purpose};
+        let d = rfd::AsyncFileDialog::new().add_filter("Studio content", &["zip"]);
+        self.dialogs.start(Purpose::ImportStudioContent, d, Kind::PickFile);
+    }
+
     pub fn open_folder_dialog(&mut self) {
         use crate::file_dialog::{Kind, Purpose};
         self.dialogs.start(Purpose::OpenFolder, rfd::AsyncFileDialog::new(), Kind::PickFolder);
@@ -997,6 +1005,7 @@ impl Editor {
         match purpose {
             Purpose::OpenPlace => self.open_path(path),
             Purpose::OpenFolder => self.open_folder(path, true),
+            Purpose::ImportStudioContent => rustudio_core::studio_content::spawn_import(path),
             Purpose::SaveAs => self.save_to(path),
             Purpose::InsertModel => self.insert_model_file(path),
             Purpose::SaveSelection(sel) => match self.game.doc.save_selection_to(&sel, &path) {

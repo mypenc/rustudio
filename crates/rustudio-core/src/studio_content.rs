@@ -186,18 +186,23 @@ pub fn fetch_classic_oof_once() {
         return;
     }
     let _ = std::thread::Builder::new().name("classic-oof".into()).spawn(|| {
-        let dest = classic_oof();
-        let got = fetch_one(&agent(), &format!("{CDN}/{CLASSIC_OOF_PKG}"), "uuhhh.mp3").and_then(|data| {
-            let dir = dest.parent().ok_or("bad data dir")?;
-            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-            let tmp = dir.join(".uuhhh.mp3.part");
-            std::fs::write(&tmp, &data).map_err(|e| e.to_string())?;
-            std::fs::rename(&tmp, &dest).map_err(|e| e.to_string())
-        });
-        if let Err(e) = got {
+        if let Err(e) = fetch_classic_oof() {
             post(true, format!("Couldn't fetch the classic death sound (Studio plays its replacement meanwhile): {e}"));
         }
     });
+}
+
+/// Fetch the classic Oof now (also what `examples/export_studio_content.rs`
+/// does for the offline zip).
+pub fn fetch_classic_oof() -> Result<(), String> {
+    let dest = classic_oof();
+    fetch_one(&agent(), &format!("{CDN}/{CLASSIC_OOF_PKG}"), "uuhhh.mp3").and_then(|data| {
+        let dir = dest.parent().ok_or("bad data dir")?;
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        let tmp = dir.join(".uuhhh.mp3.part");
+        std::fs::write(&tmp, &data).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &dest).map_err(|e| e.to_string())
+    })
 }
 
 fn studio_version(version: &str) -> Option<&str> {
@@ -388,6 +393,84 @@ pub fn install(progress: &dyn Fn(&str)) -> Result<String, String> {
     Ok(version)
 }
 
+/// Import the zip the "Studio content" workflow makes
+/// (`.github/workflows/studio-content.yml`), for a machine with no internet:
+/// `studio/…` becomes the downloaded Studio content (`install_dir()`) and
+/// `classic-sounds/…` the classic Oof's folder, exactly what `install` and
+/// `fetch_classic_oof` leave. Returns the Studio version imported.
+pub fn import_zip(path: &Path, progress: &dyn Fn(&str)) -> Result<String, String> {
+    let classic_dir = classic_oof().parent().map(Path::to_path_buf).ok_or("bad data dir")?;
+    import_zip_to(path, &install_dir(), &classic_dir, progress)
+}
+
+/// `import_zip` into the given folders; a zip that isn't complete or has a
+/// path that would leave them changes nothing.
+fn import_zip_to(path: &Path, dest: &Path, classic_dir: &Path, progress: &dyn Fn(&str)) -> Result<String, String> {
+    progress(&format!("reading {}", path.display()));
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let zip = Zip::parse(&bytes).map_err(|e| format!("{}: not a zip ({e})", path.display()))?;
+    let marker = format!("studio/{MARKER}");
+    if !zip.entries.iter().any(|e| e.name.replace('\\', "/") == marker) {
+        return Err(format!("{} isn't Studio content made by the rustudio workflow (no {marker} inside)", path.display()));
+    }
+    let parent = dest.parent().ok_or("bad install dir")?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    let partial = parent.join(format!(".studio-partial-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&partial);
+
+    let mut classic: Vec<(String, Vec<u8>)> = Vec::new();
+    let result = (|| -> Result<(), String> {
+        for e in &zip.entries {
+            if e.name.ends_with(['/', '\\']) {
+                continue;
+            }
+            let name = e.name.replace('\\', "/");
+            if let Some(rest) = name.strip_prefix("studio/") {
+                let data = zip.read(&bytes, e).map_err(|err| format!("{}: {err}", e.name))?;
+                write_file(&partial, rest, &data)?;
+            } else if let Some(rest) = name.strip_prefix("classic-sounds/") {
+                let data = zip.read(&bytes, e).map_err(|err| format!("{}: {err}", e.name))?;
+                classic.push((rest.to_string(), data));
+            }
+        }
+        if partial.join(MARKER).is_file() {
+            Ok(())
+        } else {
+            Err("the zip has no complete Studio content".into())
+        }
+    })();
+    if let Err(e) = result {
+        let _ = std::fs::remove_dir_all(&partial);
+        return Err(e);
+    }
+    let _ = std::fs::remove_dir_all(dest);
+    std::fs::rename(&partial, dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+    for (name, data) in classic {
+        write_file(classic_dir, &name, &data)?;
+    }
+    let version = std::fs::read_to_string(dest.join(MARKER))
+        .ok()
+        .and_then(|m| m.split_whitespace().next().map(str::to_string))
+        .unwrap_or_default();
+    progress(&format!("imported into {}", dest.display()));
+    Ok(version)
+}
+
+/// `import_zip` on a background thread, reporting to Output (the File menu's
+/// Import Studio Content).
+pub fn spawn_import(path: PathBuf) {
+    let _ = std::thread::Builder::new().name("studio-content-import".into()).spawn(move || {
+        post(false, format!("Importing Studio content from {}…", path.display()));
+        match import_zip(&path, &|_| {}) {
+            Ok(v) => post(false, format!(
+                "Studio content {v} imported into {}. Restart rustudio to use Studio's fonts everywhere.",
+                install_dir().display()
+            )),
+            Err(e) => post(true, format!("Couldn't import Studio content: {e}")),
+        }
+    });
+}
+
 /// Write `name` (a zip path, `\` or `/` separated) under `root`, refusing
 /// anything that would land outside it.
 fn write_file(root: &Path, name: &str, data: &[u8]) -> Result<(), String> {
@@ -559,6 +642,99 @@ impl Zip {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A zip of stored (uncompressed) files, as `zip -0` would make.
+    fn stored_zip(files: &[(&str, &[u8])]) -> Vec<u8> {
+        let (mut out, mut central) = (Vec::new(), Vec::new());
+        for (name, data) in files {
+            let mut crc = flate2::Crc::new();
+            crc.update(data);
+            let offset = out.len() as u32;
+            out.extend(b"PK\x03\x04");
+            out.extend([20u8, 0, 0, 0, 0, 0, 0, 0, 0, 0]); // version, flags, method 0, time, date
+            for v in [crc.sum(), data.len() as u32, data.len() as u32] {
+                out.extend(v.to_le_bytes());
+            }
+            out.extend((name.len() as u16).to_le_bytes());
+            out.extend([0u8, 0]);
+            out.extend(name.as_bytes());
+            out.extend(*data);
+            central.extend(b"PK\x01\x02");
+            central.extend([20u8, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            for v in [crc.sum(), data.len() as u32, data.len() as u32] {
+                central.extend(v.to_le_bytes());
+            }
+            central.extend((name.len() as u16).to_le_bytes());
+            central.extend([0u8; 12]); // extra, comment, disk, internal attrs, external attrs
+            central.extend(offset.to_le_bytes());
+            central.extend(name.as_bytes());
+        }
+        let cd_offset = out.len() as u32;
+        out.extend(&central);
+        out.extend(b"PK\x05\x06");
+        out.extend([0u8; 4]);
+        out.extend((files.len() as u16).to_le_bytes());
+        out.extend((files.len() as u16).to_le_bytes());
+        out.extend((central.len() as u32).to_le_bytes());
+        out.extend(cd_offset.to_le_bytes());
+        out.extend([0u8, 0]);
+        out
+    }
+
+    fn temp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("rs-import-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// The offline zip lands where `install` and `fetch_classic_oof` put things.
+    #[test]
+    fn imports_the_workflow_zip() {
+        let d = temp("ok");
+        let zip = d.join("studio-content.zip");
+        std::fs::write(
+            &zip,
+            stored_zip(&[
+                ("studio/content/fonts/a.ttf", b"font"),
+                ("studio/.rustudio-studio-version", b"version-abc legacy-textures-1\n"),
+                ("classic-sounds/uuhhh.mp3", b"oof"),
+            ]),
+        )
+        .unwrap();
+        let (dest, classic) = (d.join("data/studio"), d.join("data/classic-sounds"));
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("old.txt"), "stale").unwrap();
+        assert_eq!(import_zip_to(&zip, &dest, &classic, &|_| {}).unwrap(), "version-abc");
+        assert_eq!(std::fs::read(dest.join("content/fonts/a.ttf")).unwrap(), b"font");
+        assert!(!dest.join("old.txt").exists(), "the previous content is replaced");
+        assert_eq!(std::fs::read(classic.join("uuhhh.mp3")).unwrap(), b"oof");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Not Studio content, or a path out of the folder: nothing changes.
+    #[test]
+    fn refuses_a_bad_zip_and_changes_nothing() {
+        let d = temp("bad");
+        let (dest, classic) = (d.join("data/studio"), d.join("data/classic-sounds"));
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("keep.txt"), "kept").unwrap();
+        for (name, files) in [
+            ("no-marker.zip", stored_zip(&[("studio/content/a.txt", b"x")])),
+            (
+                "escape.zip",
+                stored_zip(&[("studio/.rustudio-studio-version", b"v r\n"), ("studio/../evil.txt", b"x")]),
+            ),
+            ("not-a-zip.zip", b"hello".to_vec()),
+        ] {
+            let zip = d.join(name);
+            std::fs::write(&zip, files).unwrap();
+            assert!(import_zip_to(&zip, &dest, &classic, &|_| {}).is_err(), "{name}");
+            assert_eq!(std::fs::read_to_string(dest.join("keep.txt")).unwrap(), "kept", "{name}");
+        }
+        assert!(!d.join("data/evil.txt").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn refuses_escaping_paths() {
