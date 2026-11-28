@@ -110,6 +110,7 @@ pub const METHODS: &[(&str, &str)] = &[
     ("UnbindCoreAction", "ContextActionService"),
     ("GetBoundCoreActionInfo", "ContextActionService"),
     ("GetAllBoundCoreActionInfo", "ContextActionService"),
+    ("FireActionButtonFoundSignal", "ContextActionService"),
     // LayerCollector / PlayerGui
     ("GetGuiObjectsAtPosition", "LayerCollector"),
     ("GetGuiObjectsAtPosition", "BasePlayerGui"),
@@ -210,6 +211,10 @@ pub const EVENTS: &[(&str, &str)] = &[
     ("UserCFrameChanged", "UserInputService"),
     ("LocalToolEquipped", "ContextActionService"),
     ("LocalToolUnequipped", "ContextActionService"),
+    ("BoundActionChanged", "ContextActionService"),
+    ("BoundActionAdded", "ContextActionService"),
+    ("BoundActionRemoved", "ContextActionService"),
+    ("GetActionButtonEvent", "ContextActionService"),
     ("SafeZoneOffsetsChanged", "GuiService"),
     ("ErrorMessageChanged", "GuiService"),
     ("NativeClose", "GuiService"),

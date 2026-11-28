@@ -745,10 +745,13 @@ impl Game {
             // Textures still on their way (the part is redone when one can
             // get further); `waiting` is for everything else.
             let mut tex_wait: Vec<String> = Vec::new();
-            // A file mesh with no mesh id (an empty SpecialMesh FileMesh or
-            // MeshPart): nothing to draw, as in Studio (Place B's striped
-            // ground cover, round 23).
-            if d.placeholder && sp.mesh_asset.is_none() {
+            // A file mesh with no mesh id (an empty SpecialMesh FileMesh):
+            // nothing to draw, as in Studio (Place B's striped ground cover, round 23).
+            // An empty MeshPart draws Studio's 4×4-stud checkerboard box.
+            if d.placeholder
+                && sp.mesh_asset.is_none()
+                && !self.doc.class_of(sp.r).is_some_and(|c| c == "MeshPart")
+            {
                 d.alpha = 0.0;
                 d.placeholder = false;
                 alpha_forced = true;
@@ -837,7 +840,7 @@ impl Game {
                                     refresh_skin_deps.push(sp.r);
                                 }
                                 skin_base = Some((asset.id.clone(), base.clone()));
-                                if rustudio_render::skin::cpu_skinning() {
+                                if rustudio_render::skin::cpu_skinning() || !renderer.can_skin_gpu() {
                                     if let Some((palette, scale, origin)) = rustudio_render::skin::pose(&self.doc, sp.r, &base) {
                                         skin_pose = Some(Some((palette.clone(), scale, origin)));
                                         let (p, n) = rustudio_render::skin::deform(&base, &palette, scale, origin);

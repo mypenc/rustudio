@@ -3973,7 +3973,7 @@ pub(crate) fn layout_slots(
     let mut walk = walk::Walk {
         gui: &mut gui, ctx: &ctx, input: &mut input, items: Vec::new(),
         hits: Vec::new(), seq: 0, boxes: Vec::new(), global_z: false,
-        abs_offset: [0.0; 2], screen: None, cur: parent, rec: Vec::new(),
+        abs_offset: [0.0; 2], screen: None, fullscreen_ext: None, cur: parent, rec: Vec::new(),
         replaying: 0, table_cells: HashMap::new(),
     };
     let slots = walk.place_children(parent, rect, scale, true);

@@ -675,6 +675,9 @@ end
 methods["ContextActionService.GetAllBoundCoreActionInfo"] = function(self)
     return LM.GetAllBoundCoreActionInfo(self)
 end
+methods["ContextActionService.FireActionButtonFoundSignal"] = function(self, name, button)
+    return LM.FireActionButtonFoundSignal(self, name, button)
+end
 local equipped_tool = nil
 methods["ContextActionService.GetCurrentLocalToolIcon"] = function()
     if equipped_tool and equipped_tool.Parent then return equipped_tool.TextureId end

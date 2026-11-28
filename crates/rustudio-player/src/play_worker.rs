@@ -931,7 +931,9 @@ impl Game {
     /// next step runs while the viewport reads the completed mirror.
     pub(crate) fn threaded_step(&mut self, keyboard: PlayKeyboard, dt: f32, host: &mut dyn GameHost) {
         let Some(mut threaded) = self.play_thread.take() else { return };
-        threaded.queue_edits(EditorEdits::take(self));
+        let taken = EditorEdits::take(self);
+        let has_editor_edits = !taken.edits.is_empty();
+        threaded.queue_edits(taken);
         // The viewport applies TextBox edits using the mirrored Text and its
         // local caret. Publish a queued edit before the viewport edits again
         // so it cannot apply that caret to the preceding Text.
@@ -939,7 +941,7 @@ impl Game {
             play.game.gui_events.iter().any(|event| matches!(event, GuiEvent::TextBoxUpdate { .. }))
         });
         // A fixed-step replay also joins every preceding step.
-        match threaded.receive(self, host, textbox_edit || self.fixed_dt.is_some()) {
+        match threaded.receive(self, host, textbox_edit || has_editor_edits || self.fixed_dt.is_some()) {
             Receive::Available => {}
             Receive::Pending => {
                 threaded.deferred_dt = (threaded.deferred_dt + dt).min(rustudio_core::mech::MAX_FRAME_DT);
@@ -950,7 +952,7 @@ impl Game {
             Receive::Stopped => return,
         }
         let dt = (dt + std::mem::take(&mut threaded.deferred_dt)).min(rustudio_core::mech::MAX_FRAME_DT);
-        let wait_for_publication = std::mem::take(&mut threaded.follow_local_input) || textbox_edit;
+        let wait_for_publication = std::mem::take(&mut threaded.follow_local_input) || textbox_edit || has_editor_edits;
         let edits = threaded.queued_edits.take().expect("edits scanned at this boundary");
         let input = Input::take(self, keyboard, edits);
         let mut source = threaded.source.take().expect("last snapshot was applied");

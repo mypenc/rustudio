@@ -737,8 +737,68 @@ impl Game {
         }
         s.showing = side;
         self.doc.selection.clear();
+        let _ = self.doc.marks_for(rustudio_core::doc::Reader::RenderSnapshot);
         self.scene = rustudio_render::scene::Scene::default();
         host.document_changed(&self.doc);
+    }
+
+    /// In non-threaded Play (`RUSTUDIO_PLAY_WORKER=0` / `--fixed-dt`), the
+    /// editor mutates `self.doc` directly between frames. Forward those marks
+    /// into replication and Luau `.Changed` signals so Server/Client edits
+    /// behave identically to threaded Play.
+    fn flush_direct_editor_edits(&mut self) {
+        let Some(showing) = self.play.as_ref().map(|s| s.showing) else {
+            return;
+        };
+        let marks = self.doc.marks_for(rustudio_core::doc::Reader::RenderSnapshot);
+        let rustudio_core::doc::Marks::Some(marks) = marks else {
+            return;
+        };
+        if marks.is_empty() {
+            return;
+        }
+        let mut seen_props = rustc_hash::FxHashSet::default();
+        let mut seen_tree = rustc_hash::FxHashSet::default();
+        let mut prop_changes: Vec<(Ref, rbx_dom_weak::Ustr)> = Vec::new();
+        let mut tree_changes: Vec<(Ref, bool)> = Vec::new();
+        for mark in marks {
+            match mark {
+                rustudio_core::doc::Mark::Prop(r, key) if seen_props.insert((r, key)) => {
+                    prop_changes.push((r, key));
+                }
+                rustudio_core::doc::Mark::Tree(r) if seen_tree.insert(r) => {
+                    tree_changes.push((r, self.doc.exists(r)));
+                }
+                _ => {}
+            }
+        }
+        if prop_changes.is_empty() && tree_changes.is_empty() {
+            return;
+        }
+        if showing == Side::Server {
+            for &(r, key) in &prop_changes {
+                if key == "Name" {
+                    self.record(RepOp::Name(r));
+                } else {
+                    self.record(RepOp::Prop(r, key.to_string()));
+                }
+            }
+            for &(r, exists) in &tree_changes {
+                if exists {
+                    self.record(RepOp::Parent(r));
+                } else {
+                    self.record(RepOp::Destroy(r));
+                }
+            }
+        }
+        self.server_front();
+        self.with_side(showing, |rt, _, _| {
+            for &(r, key) in &prop_changes {
+                rt.notify_prop(r, key.as_str());
+            }
+            rt.dispatch();
+        });
+        self.shown_front();
     }
 
     /// Runs `f` with one side's runtime entered (its DataModel lent to Lua).
@@ -3142,7 +3202,11 @@ impl Game {
         if self.play_thread.is_some() {
             self.threaded_step(keyboard, dt, host);
         } else {
+            self.flush_direct_editor_edits();
             self.step_play(dt, host, &keyboard, false);
+            if self.play.is_some() {
+                let _ = self.doc.marks_for(rustudio_core::doc::Reader::RenderSnapshot);
+            }
         }
     }
 
@@ -4916,10 +4980,12 @@ mod client_start_order_tests {
         assert!(game.touch_mode());
         game.play.as_mut().unwrap().mouse_behavior = 1;
         let ctx = egui::Context::default();
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+        ctx.run_ui(egui::RawInput::default(), |ui| {
             let resp = ui.allocate_rect(ui.max_rect(), egui::Sense::click_and_drag());
             game.update_game_mouse(ui.ctx(), &resp, egui::Vec2::ZERO, 0.0);
-        });
+        })
+        .textures_delta
+        .clear();
         assert!(game.game_grab.is_none());
         assert!(!game.cursor_log.iter().any(|c| c.starts_with("game-grab")), "{:?}", game.cursor_log);
     }
@@ -5053,7 +5119,7 @@ mod client_start_order_tests {
         for _ in 0..n {
             ctx.begin_pass(egui::RawInput { focused: true, ..Default::default() });
             game.play_tick(&ctx, 1.0 / 60.0, &mut (), true, false);
-            let _ = ctx.end_pass();
+            ctx.end_pass().textures_delta.clear();
         }
     }
 
@@ -5178,7 +5244,7 @@ mod client_start_order_tests {
         let mut keys = |game: &mut Game, modifiers: egui::Modifiers| {
             ctx.begin_pass(egui::RawInput { events: vec![egui::Event::ModifiersChanged(modifiers)], focused: true, ..Default::default() });
             game.game_keys(&ctx, true);
-            let _ = ctx.end_pass();
+            ctx.end_pass().textures_delta.clear();
         };
         keys(&mut game, egui::Modifiers::NONE);
         assert_eq!(game.input_flip, crate::game::InputFlip::None);

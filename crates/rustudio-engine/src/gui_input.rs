@@ -1065,6 +1065,7 @@ impl Gui {
         }));
         drop(pre);
         let place = rustudio_core::bench::scope("gui_place");
+        let safe_rect = rect;
         // From here on the whole screen: a simulated device's world GUIs and
         // ScreenGui clips cover its notch too, and its pixels are its scale.
         let rect = screen;
@@ -1173,10 +1174,16 @@ impl Gui {
                     screen_gui: class == "ScreenGui",
                     clips: doc::is_a(class, "PluginGui")
                         || boolp(d, g, "ClipsDescendants", class == "SurfaceGui"),
+                    clip_safe: class == "ScreenGui"
+                        && boolp(d, g, "ClipToDeviceSafeArea", false)
+                        && enum_u32(d.prop(g, "ScreenInsets")) != Some(0),
+                    // SafeAreaCompatibility defaults to FullscreenExtension (1) in Roblox.
+                    fullscreen_ext: class == "ScreenGui"
+                        && enum_u32(d.prop(g, "SafeAreaCompatibility")).unwrap_or(1) == 1,
                 }
             };
             // (kept while the journal is this document's: see cache_marks)
-            let RootProps { global_z, screen_gui, clips } = if specs_ok {
+            let RootProps { global_z, screen_gui, clips, clip_safe, fullscreen_ext } = if specs_ok {
                 *self.root_props.entry(g).or_insert_with(read_props)
             } else {
                 read_props()
@@ -1184,12 +1191,12 @@ impl Gui {
             let canvas_rect =
                 Rect::from_min_size(Pos2::ZERO, egui::vec2(root.canvas[0], root.canvas[1]));
             let clip = if screen_gui {
-                // The view, in the canvas's coordinates: a ScreenGui's content
-                // is not held to its inset box (Roblox: a Frame at Y offset
-                // −58 in a CoreUISafeInsets gui shows under the top bar;
-                // TopbarPlus's dropdowns hang below its TopbarSafeInsets gui).
+                // A ScreenGui's content is not held to its inset box (Roblox: a Frame at Y offset
+                // -58 in a CoreUISafeInsets gui shows under the top bar; fullscreen scrims extend
+                // behind notches/home bars unless ClipToDeviceSafeArea is true).
+                let clip_rect = if clip_safe { safe_rect } else { screen };
                 match root.target {
-                    Target::Screen(o) => Rect::from_min_max(rect.min - o.to_vec2(), rect.max - o.to_vec2()),
+                    Target::Screen(o) => Rect::from_min_max(clip_rect.min - o.to_vec2(), clip_rect.max - o.to_vec2()),
                     _ => canvas_rect,
                 }
             } else if clips {
@@ -1242,7 +1249,7 @@ impl Gui {
                 [
                     ox, oy, root.canvas[0], root.canvas[1], root.abs_offset[0], root.abs_offset[1],
                     clip.min.x, clip.min.y, clip.max.x, clip.max.y, ppp_out,
-                    global_z as u32 as f32, kind,
+                    ((global_z as u32) | ((clip_safe as u32) << 1) | ((fullscreen_ext as u32) << 2)) as f32, kind,
                 ]
                 .map(f32::to_bits)
             };
@@ -1379,7 +1386,7 @@ impl Gui {
                         None => return true,
                     }
                 }
-                let s = s.intersect(rect);
+                let s = s.intersect(screen);
                 // A pixel centre (i + 0.5) / ppp inside on both axes.
                 s.is_positive() && contains_pixel_center(s.min.x, s.max.x, ppp)
                     && contains_pixel_center(s.min.y, s.max.y, ppp)
@@ -1402,6 +1409,17 @@ impl Gui {
                         }
                     }
                     let walk_scope = rustudio_core::bench::scope("gui_walk");
+                    let fullscreen_ext_rects = if screen_gui && fullscreen_ext && screen != safe_rect {
+                        match root.target {
+                            Target::Screen(o) => Some((
+                                Rect::from_min_max(safe_rect.min - o.to_vec2(), safe_rect.max - o.to_vec2()),
+                                Rect::from_min_max(screen.min - o.to_vec2(), screen.max - o.to_vec2()),
+                            )),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
                     let mut w = Walk {
                         gui: self,
                         ctx,
@@ -1416,6 +1434,7 @@ impl Gui {
                             Target::Screen(p) => Some(p),
                             _ => None,
                         },
+                        fullscreen_ext: fullscreen_ext_rects,
                         cur: Ref::none(),
                         rec: Vec::new(),
                         replaying: 0,
@@ -1461,6 +1480,7 @@ impl Gui {
                                 Target::Screen(p) => Some(p),
                                 _ => None,
                             },
+                            fullscreen_ext: fullscreen_ext_rects,
                             cur: Ref::none(),
                             rec: Vec::new(),
                             replaying: 0,
@@ -1836,11 +1856,11 @@ impl Gui {
             counter("GUI layers", Cat::Gui, self.layout_roots.len() as f64);
         }
         let _paint = rustudio_core::bench::scope("gui_paint");
-        let clipped = painter.with_clip_rect(rect);
+        let clipped = painter.with_clip_rect(screen);
         // (RUSTUDIO_GUI_BLACK_BG: ScreenGuis over black, to compare GUI
         // captures without the 3D view's frame-to-frame differences)
         if debug_env(DebugEnv::BlackBg) {
-            clipped.rect_filled(rect, 0.0, Color32::BLACK);
+            clipped.rect_filled(screen, 0.0, Color32::BLACK);
         }
         clipped.extend(out);
     }
@@ -1949,9 +1969,10 @@ impl Gui {
         let map = self.pointer_map;
         let touching = self.touch_id.is_none()
             || ctx.input(|i| i.pointer.primary_down() || i.pointer.primary_released() || i.pointer.primary_pressed());
+        let bounds = self.device.map_or(rect, |f| f.screen);
         let pointer = self.pointer_override.or(resp.hover_pos())
             .map(|p| map.map_or(p, |m| m * p))
-            .filter(|p| rect.contains(*p) && touching);
+            .filter(|p| bounds.contains(*p) && touching);
         let under: Vec<Hit> = match pointer {
             Some(p) => self
                 .hits
@@ -3303,6 +3324,8 @@ pub(crate) struct RootProps {
     global_z: bool,
     screen_gui: bool,
     clips: bool,
+    clip_safe: bool,
+    fullscreen_ext: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -3733,6 +3756,7 @@ mod edit_screen_gui_tests {
 mod device_screen_tests {
     use super::*;
     use crate::ltypes::LRect;
+    use rbx_dom_weak::{types::{Color3, Enum, UDim, UDim2}, InstanceBuilder};
 
     #[test]
     fn none_screen_gui_covers_the_notch() {
@@ -3749,5 +3773,87 @@ mod device_screen_tests {
         // no device: the screen is the view, as before
         let (_, canvas, off) = screen_root(rect, rect, Some(0), 0.0, bar);
         assert_eq!((canvas, off), ([749.0, 389.0], [0.0, -58.0]));
+    }
+
+    #[test]
+    fn fullscreen_extension_extends_scrim_beyond_safe_area() {
+        let mut d = Document::new_place();
+        let root = d.dom.root_ref();
+        let cg = d
+            .find_child(root, "CoreGui")
+            .unwrap_or_else(|| d.insert(root, InstanceBuilder::new("CoreGui").with_name("CoreGui")));
+        let rg = d.insert(
+            cg,
+            InstanceBuilder::new("ScreenGui")
+                .with_name("RobloxGui")
+                .with_property("ScreenInsets", Variant::Enum(Enum::from_u32(2)))
+                .with_property("ClipToDeviceSafeArea", Variant::Bool(true))
+                .with_property("SafeAreaCompatibility", Variant::Enum(Enum::from_u32(1))),
+        );
+        let shield = d.insert(
+            rg,
+            InstanceBuilder::new("Frame")
+                .with_name("SettingsClippingShield")
+                .with_property("ClipsDescendants", Variant::Bool(true))
+                .with_property("BackgroundTransparency", Variant::Float32(1.0))
+                .with_property("Position", UDim2::new(UDim::new(0.0, 0), UDim::new(0.0, -58)))
+                .with_property("Size", UDim2::new(UDim::new(1.0, 0), UDim::new(1.0, 58))),
+        );
+        let _bg = d.insert(
+            shield,
+            InstanceBuilder::new("Frame")
+                .with_name("DarkenBackground")
+                .with_property("BackgroundTransparency", Variant::Float32(0.5))
+                .with_property("BackgroundColor3", Variant::Color3(Color3::new(0.0, 0.0, 0.0)))
+                .with_property("Size", UDim2::new(UDim::new(1.0, 0), UDim::new(1.0, 0))),
+        );
+
+        let screen = Rect::from_min_size(Pos2::ZERO, egui::vec2(843.0, 389.0));
+        let safe = Rect::from_min_max(Pos2::new(47.0, 0.0), Pos2::new(796.0, 389.0));
+        let ctx = egui::Context::default();
+        let mut gui = Gui::default();
+        gui.device = Some(crate::gui::DeviceFrame { screen, scale: 1.0 });
+        let cam = Camera::default();
+        let mut store = AssetStore::default();
+        let mut min_x = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut clip_rect_drawn = Rect::NOTHING;
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            let mut painter = ui.painter().clone();
+            painter.set_clip_rect(screen);
+            gui.draw(
+                ui.ctx(),
+                &painter,
+                DrawIn {
+                    render_state: None,
+                    doc: &d,
+                    cam: &cam,
+                    rect: safe,
+                    store: &mut store,
+                    doc_dir: None,
+                    playing: true,
+                    fixed_step: true,
+                    roots: Roots::View,
+                },
+            );
+        });
+        out.textures_delta.clear();
+        for cs in &out.shapes {
+            if let egui::Shape::Mesh(m) = &cs.shape {
+                for v in &m.vertices {
+                    min_x = min_x.min(v.pos.x);
+                    max_x = max_x.max(v.pos.x);
+                }
+                clip_rect_drawn = cs.clip_rect;
+            }
+        }
+        assert!(
+            min_x <= 0.5 && max_x >= 842.5,
+            "scrim should extend to full screen (0..843), got {min_x}..{max_x} clip={clip_rect_drawn:?}"
+        );
+        assert!(
+            clip_rect_drawn.min.x <= 0.5 && clip_rect_drawn.max.x >= 842.5,
+            "clip rect should cover full screen, got {clip_rect_drawn:?}"
+        );
     }
 }

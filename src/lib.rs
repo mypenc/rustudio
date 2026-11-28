@@ -18,6 +18,7 @@
 //! `src/main.rs` is the GUI entry point and calls [`run`].
 
 pub mod anim_editor;
+pub mod command_bar;
 pub mod asset_manager;
 pub mod plugin_store;
 pub mod toolbox;
@@ -29,6 +30,7 @@ pub mod ribbon_quick;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod cloud_ui;
+pub mod game_settings_ui;
 pub mod join_ui;
 pub mod app;
 mod native_loop;
@@ -479,7 +481,9 @@ pub fn run() -> eframe::Result<()> {
     log::info!(
         "RusTudio {} ({}) on {}/{}",
         env!("CARGO_PKG_VERSION"),
-        option_env!("RUSTUDIO_GIT").unwrap_or("unknown commit"),
+        option_env!("RUSTUDIO_GIT_SHA")
+            .or(option_env!("RUSTUDIO_GIT"))
+            .unwrap_or("unknown commit"),
         std::env::consts::OS,
         std::env::consts::ARCH
     );

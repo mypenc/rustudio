@@ -293,6 +293,8 @@ pub struct World {
     /// (`Runtime::start_core_scripts`): the modules' bytecode by instance
     /// and the CoreScripts by name.
     pub core_scripts: rustudio_core::core_scripts::Installed,
+    /// Per-WorldRoot physics worlds created lazily by `WorldRoot:StepPhysics`.
+    pub(crate) step_physics: HashMap<Ref, Box<rustudio_physics::physics::Physics>>,
 }
 
 impl World {
@@ -798,6 +800,7 @@ impl World {
             prop_ref_edges: HashMap::new(),
             prop_ref_counts: HashMap::new(),
             core_scripts: Default::default(),
+            step_physics: HashMap::new(),
             requests: Default::default(),
             input: Default::default(),
             started: HashSet::new(),
@@ -7323,6 +7326,26 @@ impl Runtime {
 
     pub fn inst(&self, r: Ref) -> Value {
         inst_value(&self.lua, r).unwrap_or(Value::Nil)
+    }
+
+    /// Returns the client's `PlayerMouse` instance, creating it lazily if no
+    /// script has called `LocalPlayer:GetMouse()` yet (e.g. `Tool.Equipped`).
+    pub fn ensure_mouse(&self) -> Value {
+        let lua = &self.lua;
+        let existing = world(lua).ok().and_then(|w| w.input.mouse);
+        let m = match existing {
+            Some(m) if world(lua).is_ok_and(|w| w.d().exists(m)) => Some(m),
+            _ => match ext::create_any(lua, "PlayerMouse") {
+                Ok(m) => {
+                    if let Ok(mut w) = world(lua) {
+                        w.input.mouse = Some(m);
+                    }
+                    Some(m)
+                }
+                Err(_) => None,
+            },
+        };
+        m.and_then(|r| inst_value(lua, r).ok()).unwrap_or(Value::Nil)
     }
 
     /// Re-anchors pending timers' wall-clock timestamps to now so synchronous

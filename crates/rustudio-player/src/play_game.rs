@@ -1019,16 +1019,11 @@ impl Game {
             return;
         };
         let Some(s) = self.play.as_mut() else { return };
-        let mouse = s
-            .client
-            .as_ref()
-            .and_then(|c| c.world.as_ref())
-            .and_then(|w| w.input.mouse);
         if let Some(e) = s.game.equipped.as_mut() {
             e.client_told = true;
         }
         self.with_side(Side::Client, |rt, _, _| {
-            let m = mouse.map(|m| rt.inst(m)).unwrap_or(Value::Nil);
+            let m = rt.ensure_mouse();
             rt.fire(ct, "Equipped", vec![m]);
         });
     }
@@ -1139,17 +1134,10 @@ impl Game {
                 Some(t) => {
                     self.equip_tool(t);
                     // A client script's EquipTool: its tool hears Equipped
-                    // now (Studio fires it right after the call), pointer or
-                    // not.
+                    // now (Studio fires it right after the call) with the
+                    // client's PlayerMouse.
                     if side == Side::Client {
-                        let ct = self.client_of(t);
-                        let told = self.play.as_mut().and_then(|s| s.game.equipped.as_mut()).filter(|e| e.tool == t);
-                        if let (Some(ct), Some(e)) = (ct, told) {
-                            if !e.client_told {
-                                e.client_told = true;
-                                self.with_side(Side::Client, |rt, _, _| rt.fire(ct, "Equipped", vec![Value::Nil]));
-                            }
-                        }
+                        self.tell_client_equipped();
                     }
                 }
                 None => self.unequip_tool(),
@@ -1293,7 +1281,6 @@ impl Game {
         let in_hand = cd.dom.get_by_ref(tool).map(|i| i.parent()) == Some(model);
         s.client_sim.hold(&parts, true);
         s.game.client_tool = Some(Equipped { tool, offsets, client_told: true });
-        let mouse = s.client.as_ref().and_then(|c| c.world.as_ref()).and_then(|w| w.input.mouse);
         // In the hand before Equipped fires: Roblox has the grip made by then, so a script
         // that reads Handle.CFrame there (a hanging lantern's, building on it) gets the hand.
         self.place_client_tool_now();
@@ -1301,7 +1288,7 @@ impl Game {
             if !in_hand {
                 rt.apply_parent(tool, model);
             }
-            let m = mouse.map(|m| rt.inst(m)).unwrap_or(Value::Nil);
+            let m = rt.ensure_mouse();
             rt.fire(tool, "Equipped", vec![m]);
         });
     }
@@ -2331,10 +2318,12 @@ impl Game {
         resp: &egui::Response,
         gui_took: bool,
     ) -> bool {
+        // Only Client view owns the viewport as a live game; Server view
+        // behaves like Run/Edit so users can select, drag, and transform parts.
         let Some(side) = self
             .play
             .as_ref()
-            .filter(|p| p.mode == RunMode::Play)
+            .filter(|p| p.mode == RunMode::Play && p.showing == Side::Client)
             .map(|p| p.showing)
         else {
             return false;
@@ -2405,7 +2394,10 @@ impl Game {
                 }
             });
         }
-        // Number keys pick hotbar slots; "." toggles the emote wheel.
+        let core_scripts = self.play.as_ref().is_some_and(|s| s.game.core_scripts_active);
+        // Number keys pick hotbar slots (only when CoreScripts aren't running
+        // Roblox's own Backpack script, to avoid double-toggling tools); "."
+        // toggles the emote wheel.
         // (Chat focus hotkey is handled natively on the CoreGui TextBox path
         // by players_chat_ui.luau via UserInputService + KeyboardKeyCode.)
         let mut slots = Vec::new();
@@ -2416,12 +2408,14 @@ impl Game {
             .unwrap_or_default();
         if !ctx.egui_wants_keyboard_input() && self.gui.focus.is_none() {
             use egui::Key::*;
-            for (n, k) in [Num1, Num2, Num3, Num4, Num5, Num6, Num7, Num8, Num9]
-                .iter()
-                .enumerate()
-            {
-                if taps.contains(k) {
-                    slots.push(n);
+            if !core_scripts {
+                for (n, k) in [Num1, Num2, Num3, Num4, Num5, Num6, Num7, Num8, Num9]
+                    .iter()
+                    .enumerate()
+                {
+                    if taps.contains(k) {
+                        slots.push(n);
+                    }
                 }
             }
             // "." opens the emote wheel (Roblox's Emotes menu key).
@@ -2500,8 +2494,6 @@ impl Game {
                 );
             }
         }
-
-        let core_scripts = self.play.as_ref().is_some_and(|s| s.game.core_scripts_active);
 
         // Hotbar (native fallback only when CoreScripts aren't running).
         let info = self.play_hotbar();

@@ -69,20 +69,33 @@ struct Fonts {
     scale: f32,
     size: [usize; 2],
     fill: f32,
+    defs: (usize, usize, usize),
 }
 
 impl Fonts {
     fn current(ctx: &Context) -> Self {
-        let (size, fill) = ctx.fonts(|f| (f.font_image_size(), f.font_atlas_fill_ratio()));
+        let (size, fill, defs) = ctx.fonts(|f| {
+            let d = f.definitions();
+            let entries: usize = d.families.values().map(Vec::len).sum();
+            (
+                f.font_image_size(),
+                f.font_atlas_fill_ratio(),
+                (d.font_data.len(), d.families.len(), entries),
+            )
+        });
         Self {
             scale: ctx.pixels_per_point(),
             size,
             fill,
+            defs,
         }
     }
 
     fn reusable(&self, now: &Self) -> bool {
-        self.scale == now.scale && self.size == now.size && self.fill <= now.fill
+        self.scale == now.scale
+            && self.size == now.size
+            && self.fill <= now.fill
+            && self.defs == now.defs
     }
 }
 
@@ -360,5 +373,38 @@ mod tests {
         .textures_delta
         .clear();
         assert!(clicked);
+    }
+
+    #[test]
+    fn adding_font_invalidates_cached_panel_fonts() {
+        let ctx = Context::default();
+        let mut before = None;
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            before = Some(Fonts::current(ui.ctx()));
+        })
+        .textures_delta
+        .clear();
+        let before = before.expect("captured before fonts");
+
+        let base = ctx.fonts(|f| f.definitions().font_data.values().next().unwrap().clone());
+        ctx.add_font(egui::epaint::text::FontInsert::new(
+            "test:extra",
+            (*base).clone(),
+            vec![egui::epaint::text::InsertFontFamily {
+                family: egui::FontFamily::Name("test:extra".into()),
+                priority: egui::epaint::text::FontPriority::Highest,
+            }],
+        ));
+        let mut after = None;
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            after = Some(Fonts::current(ui.ctx()));
+        })
+        .textures_delta
+        .clear();
+        let after = after.expect("captured after fonts");
+        assert!(
+            !before.reusable(&after),
+            "rebuilding the font atlas via ctx.add_font must invalidate cached panel snapshots"
+        );
     }
 }

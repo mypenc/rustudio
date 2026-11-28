@@ -880,21 +880,58 @@ local function action_matches(k, input)
     return false
 end
 local core_actions = {}
+local action_buttons = {}
+local function action_info_table(a)
+    if not a then return {} end
+    return {
+        inputTypes = a.inputs,
+        priorityLevel = a.priority,
+        stackOrder = a.seq,
+        createTouchButton = a.touch == true,
+        title = a.title,
+        description = a.description,
+        image = a.image,
+        position = a.position,
+    }
+end
+local function fire_cas(self, ev, ...)
+    if self then
+        pcall(rs_fire, self, ev, ...)
+    end
+end
 local function bind_in(tbl, name, fn, touch, priority, ...)
     action_seq += 1
     tbl[name] = { fn = fn, inputs = { ... }, priority = priority, seq = action_seq, touch = touch, ident = rs_identity() }
+    return tbl[name]
 end
-local function bind(name, fn, touch, priority, ...)
-    bind_in(actions, name, fn, touch, priority, ...)
+local function bind(self, name, fn, touch, priority, ...)
+    local a = bind_in(actions, name, fn, touch, priority, ...)
+    action_buttons[name] = nil
+    fire_cas(self, "BoundActionAdded", name, touch == true, action_info_table(a))
 end
 function M.BindAction(self, name, fn, touch, ...)
-    bind(name, fn, touch, Enum.ContextActionPriority.Medium.Value, ...)
+    bind(self, name, fn, touch, Enum.ContextActionPriority.Medium.Value, ...)
 end
 function M.BindActionAtPriority(self, name, fn, touch, priority, ...)
-    bind(name, fn, touch, tonumber(priority) or Enum.ContextActionPriority.Medium.Value, ...)
+    bind(self, name, fn, touch, tonumber(priority) or Enum.ContextActionPriority.Medium.Value, ...)
 end
-function M.UnbindAction(self, name) actions[name] = nil end
-function M.UnbindAllActions(self) table.clear(actions) end
+function M.UnbindAction(self, name)
+    local old = actions[name]
+    actions[name] = nil
+    action_buttons[name] = nil
+    if old then
+        fire_cas(self, "BoundActionRemoved", name, action_info_table(old))
+    end
+end
+function M.UnbindAllActions(self)
+    local prev = {}
+    for name, a in actions do prev[name] = a end
+    table.clear(actions)
+    table.clear(action_buttons)
+    for name, old in prev do
+        fire_cas(self, "BoundActionRemoved", name, action_info_table(old))
+    end
+end
 function M.BindCoreAction(self, name, fn, touch, ...)
     bind_in(core_actions, name, fn, touch, Enum.ContextActionPriority.Medium.Value, ...)
 end
@@ -903,9 +940,7 @@ function M.BindCoreActionAtPriority(self, name, fn, touch, priority, ...)
 end
 function M.UnbindCoreAction(self, name) core_actions[name] = nil end
 function M.GetBoundCoreActionInfo(self, name)
-    local a = core_actions[name]
-    if not a then return {} end
-    return { inputTypes = a.inputs, priorityLevel = a.priority, stackOrder = a.seq, createTouchButton = a.touch == true }
+    return action_info_table(core_actions[name])
 end
 function M.GetAllBoundCoreActionInfo(self)
     local out = {}
@@ -913,17 +948,36 @@ function M.GetAllBoundCoreActionInfo(self)
     return out
 end
 function M.GetBoundActionInfo(self, name)
-    local a = actions[name]
-    if not a then return {} end
-    return { inputTypes = a.inputs, priorityLevel = a.priority, stackOrder = a.seq, createTouchButton = a.touch == true }
+    return action_info_table(actions[name])
 end
 function M.GetAllBoundActionInfo(self)
     local out = {}
     for name in actions do out[name] = M.GetBoundActionInfo(self, name) end
     return out
 end
-function M.GetButton() return nil end
-for _, n in { "SetTitle", "SetDescription", "SetImage", "SetPosition", "BindActivate", "UnbindActivate" } do
+function M.FireActionButtonFoundSignal(self, name, button)
+    if name ~= nil then
+        action_buttons[name] = button
+    end
+end
+function M.GetButton(self, name)
+    if name == nil then return nil end
+    if action_buttons[name] == nil and actions[name] and actions[name].touch then
+        fire_cas(self, "GetActionButtonEvent", name)
+    end
+    return action_buttons[name]
+end
+local function set_action_prop(self, name, key, val)
+    local a = actions[name]
+    if not a then return end
+    a[key] = val
+    fire_cas(self, "BoundActionChanged", name, key, action_info_table(a))
+end
+function M.SetTitle(self, name, title) set_action_prop(self, name, "title", title) end
+function M.SetDescription(self, name, desc) set_action_prop(self, name, "description", desc) end
+function M.SetImage(self, name, img) set_action_prop(self, name, "image", img) end
+function M.SetPosition(self, name, pos) set_action_prop(self, name, "position", pos) end
+for _, n in { "BindActivate", "UnbindActivate" } do
     M[n] = function() end
 end
 
