@@ -505,7 +505,54 @@ impl Editor {
     }
 
     pub fn viewport_ui(&mut self, ui: &mut egui::Ui) {
-        let rect = ui.available_rect_before_wrap();
+        let full = ui.available_rect_before_wrap();
+        // Test > Device Simulator: its bar over the view; the 3D view, its
+        // tools and picking live in the simulated device's screen; the rest
+        // of the panel is letterbox (presses there do nothing).
+        let mut sim_actions = Vec::new();
+        let panel = if self.device_sim.shown {
+            let bar = Rect::from_min_size(full.min, egui::vec2(full.width(), mech::DEVICE_BAR_HEIGHT));
+            let playing = self.game.is_playing();
+            sim_actions = crate::device_sim::toolbar::toolbar(ui, bar, &self.device_sim, playing, &mut self.ui_rects);
+            Rect::from_min_max(egui::pos2(full.min.x, bar.max.y), full.max)
+        } else {
+            full
+        };
+        self.game.view_panel = panel;
+        let view_area = Rect::from_min_max(panel.min, egui::pos2(panel.max.x - mech::DEVICE_SCROLLBAR, panel.max.y));
+        self.game.device = self.device_sim.view(view_area, ui.ctx().pixels_per_point());
+        self.game.controller_on = self.device_sim.controller;
+        let frame_art = self.game.device.as_ref().and_then(|v| rustudio_core::devices::frame_art(&v.device.id));
+        let rect = match &self.game.device {
+            Some(v) => {
+                // (a device bigger than the panel: its scroll bar and the
+                // wheel over the letterbox scroll it)
+                let over = self.device_sim.overflow(v, view_area);
+                let track = crate::device_sim::frames::scrollbar_track(panel);
+                let bar = ui.interact(track, egui::Id::new("devsim_scroll"), Sense::drag());
+                let mut scroll = self.device_sim.scroll;
+                if bar.dragged() && over.y > 0.0 {
+                    scroll.y += bar.drag_delta().y * (track.height() + over.y) / track.height();
+                }
+                let wheel = ui.input(|i| i.smooth_scroll_delta);
+                let on_letterbox = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| panel.contains(p) && !v.screen_win.contains(p));
+                if on_letterbox && over != Vec2::ZERO {
+                    scroll -= wheel;
+                }
+                scroll = scroll.clamp(Vec2::ZERO, over);
+                if scroll != self.device_sim.scroll {
+                    self.device_sim.scroll = scroll;
+                    ui.ctx().request_repaint();
+                }
+                let p = ui.painter_at(panel);
+                crate::device_sim::frames::paint_letterbox(&p, panel, scroll.y, over.y);
+                if let Some(art) = &frame_art {
+                    crate::device_sim::frames::paint_body(&p, v, art);
+                }
+                v.screen_win
+            }
+            None => panel,
+        };
         self.game.viewport_rect = rect;
         rustudio_render::grass_temporal::tick(&mut self.game.cam, ui.ctx());
         let selector = Self::view_selector_rect(rect);
@@ -749,6 +796,11 @@ impl Editor {
             }
         }
         self.game.finish_view_gui(&ctx, rect, dt);
+        // The frame's rounded screen corners and cut-out, over the picture.
+        if let (Some(v), Some(art)) = (&self.game.device, &frame_art) {
+            crate::device_sim::frames::paint_over(&ui.painter_at(panel), v, art);
+        }
+        self.device_sim_windows(&ctx, panel, sim_actions);
 
         // Team Create collaborator camera name labels (Studio 0.748        // CloudEditAdornable): projected sphere center,
         // zero offset, centered X/Y, 14px, white text with black outline, no

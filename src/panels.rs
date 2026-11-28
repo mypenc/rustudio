@@ -183,6 +183,7 @@ impl Tab {
             Tab::Toolbox => "toolbox",
             Tab::AssetManager => "asset_manager",
             Tab::FileSync => "file_sync",
+            Tab::ControllerEmulator => "controller_emulator",
             Tab::Profiler => "microprofiler",
             Tab::Script(_) => "script",
             Tab::Plugin(n) => crate::plugin_host::widgets_ui::slot_key(*n),

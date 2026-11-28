@@ -134,7 +134,14 @@ impl Editor {
             if mode.is_some() && resp.clicked() {
                 self.stop_play();
             }
-            top_icon(ui, "device-mobile", theme::TEXT, false).on_hover_text("Device Simulator: not in rustudio yet");
+            // Device Simulator (Test > Device Simulator; greyed during Play).
+            let (en, on) = self.action_state("device_simulator");
+            let color = if on == Some(true) { theme::ACCENT } else { theme::TEXT };
+            let resp = top_icon(ui, "device-mobile", color, en).on_hover_text("Device Simulator");
+            self.ui_rects.insert("test.device_simulator", resp.rect);
+            if en && resp.clicked() {
+                self.run_action("device_simulator");
+            }
 
             // The tabs, centred like Studio's.
             let tab_w = 80.0;

@@ -798,22 +798,11 @@ impl Gui {
         }
     }
 
-    fn screen_root(&self, rect: Rect, insets: Option<u32>, inset: f32) -> (Target, [f32; 2], [f32; 2]) {
-        if insets == Some(3) {
-            let bar = self.topbar_inset.unwrap_or_else(|| {
-                crate::gui::fallback_topbar_inset(rect.width(), self.topbar_chat.unwrap_or(true))
-            });
-            return (
-                Target::Screen(rect.min + egui::vec2(bar.min.x, bar.min.y)),
-                (bar.max - bar.min).to_array(),
-                [bar.min.x, bar.min.y - mech::GUI_TOP_INSET],
-            );
-        }
-        (
-            Target::Screen(Pos2::new(rect.left(), rect.top() + inset)),
-            [rect.width(), rect.height() - inset],
-            [0.0, inset - mech::GUI_TOP_INSET],
-        )
+    fn screen_root(&self, rect: Rect, screen: Rect, insets: Option<u32>, inset: f32) -> (Target, [f32; 2], [f32; 2]) {
+        let bar = self.topbar_inset.unwrap_or_else(|| {
+            crate::gui::fallback_topbar_inset(rect.width(), self.topbar_chat.unwrap_or(true))
+        });
+        screen_root(rect, screen, insets, inset, bar)
     }
 
     /// Draws every GUI in view and remembers what can be clicked.
@@ -836,7 +825,11 @@ impl Gui {
         self.fx_frame(inp.doc);
         if (inp.playing && inp.roots == Roots::View) || inp.roots == Roots::CoreGui {
             let _a = rustudio_core::bench::scope("gui_adorn");
-            self.draw_adornments(inp.doc, inp.cam, inp.rect, painter);
+            let view = match self.device {
+                Some(f) if inp.roots == Roots::View => f.screen,
+                _ => inp.rect,
+            };
+            self.draw_adornments(inp.doc, inp.cam, view, painter);
         }
         if inp.roots == Roots::View && inp.playing {
             self.draw_messages(ctx, painter, inp.store, inp.doc, inp.rect);
@@ -845,6 +838,12 @@ impl Gui {
         let d = inp.doc;
         let root = d.dom.root_ref();
         let rect = inp.rect;
+        // A simulated device: the GUI is laid out in its points (Game moves
+        // the shapes into place), its whole screen around the safe-area view.
+        let (screen, ppp_out) = match self.device {
+            Some(f) if inp.roots == Roots::View => (f.screen, ctx.pixels_per_point() * f.scale),
+            _ => (rect, ctx.pixels_per_point()),
+        };
         let mut roots: Vec<Root> = Vec::new();
 
         // ScreenGuis: the LocalPlayer's PlayerGui while playing; StarterGui
@@ -893,7 +892,7 @@ impl Gui {
                         // drawn here with no inset (Roots::CoreGui): with the 58 px
                         // inset this ScreenGui sat that far below the outline.
                         let (target, canvas, abs_offset) = if inp.playing {
-                            self.screen_root(rect, si, inset)
+                            self.screen_root(rect, screen, si, inset)
                         } else {
                             (Target::Screen(rect.min), [rect.width(), rect.height()], [0.0, 0.0])
                         };
@@ -951,7 +950,7 @@ impl Gui {
                             let si = enum_u32(d.prop(g, "ScreenInsets"));
                             let ignore = matches!(si, Some(0) | Some(1));
                             let inset = if ignore { 0.0 } else { mech::GUI_TOP_INSET };
-                            let (target, canvas, abs_offset) = self.screen_root(rect, si, inset);
+                            let (target, canvas, abs_offset) = self.screen_root(rect, screen, si, inset);
                             roots.push(Root {
                                 on_top: true,
                                 layer: 2,
@@ -1066,6 +1065,9 @@ impl Gui {
         }));
         drop(pre);
         let place = rustudio_core::bench::scope("gui_place");
+        // From here on the whole screen: a simulated device's world GUIs and
+        // ScreenGui clips cover its notch too, and its pixels are its scale.
+        let rect = screen;
         let view_proj = inp.cam.view_proj(rect);
         let mut billboard_light = None;
         let mut light_terms = None;
@@ -1137,7 +1139,7 @@ impl Gui {
         // The renderer's reverse-Z projection: the depth the world GUI pass tests.
         let view_proj_rz = inp.cam.view_proj_reverse_z(rect);
         let mut tess = Tessellator::new(
-            ctx.pixels_per_point(),
+            ppp_out,
             TessellationOptions::default(),
             atlas,
             Vec::new(),
@@ -1153,7 +1155,7 @@ impl Gui {
             view_proj_rz,
             cam_pos: inp.cam.pos,
             rect,
-            ppp: ctx.pixels_per_point(),
+            ppp: ppp_out,
         };
         let mut cached_roots = 0;
         let mut triangle_counts = [0, 0, 0];
@@ -1210,7 +1212,7 @@ impl Gui {
             // walked: scripts keep reading its last layout (its canvas
             // doesn't depend on the camera).
             if let Target::Surface { tl, tr, bl } = root.target {
-                if clip != Rect::EVERYTHING && !surface_in_view(&view_proj, rect, ctx.pixels_per_point(), tl, tr, bl) {
+                if clip != Rect::EVERYTHING && !surface_in_view(&view_proj, rect, ppp_out, tl, tr, bl) {
                     // (its entries from its last walk stay in `layout`)
                     rustudio_core::bench::add("gui_unseen", 0.0, 1);
                     continue;
@@ -1219,7 +1221,7 @@ impl Gui {
             if !inp.playing && clip != Rect::EVERYTHING {
                 if let Target::Billboard(center, _) = root.target {
                     let projected = Rect::from_center_size(center, canvas_rect.size());
-                    if !projected.expand(1.0 / ctx.pixels_per_point()).intersects(rect) {
+                    if !projected.expand(1.0 / ppp_out).intersects(rect) {
                         rustudio_core::bench::add("gui_unseen", 0.0, 1);
                         continue;
                     }
@@ -1239,7 +1241,7 @@ impl Gui {
                 };
                 [
                     ox, oy, root.canvas[0], root.canvas[1], root.abs_offset[0], root.abs_offset[1],
-                    clip.min.x, clip.min.y, clip.max.x, clip.max.y, ctx.pixels_per_point(),
+                    clip.min.x, clip.min.y, clip.max.x, clip.max.y, ppp_out,
                     global_z as u32 as f32, kind,
                 ]
                 .map(f32::to_bits)
@@ -1343,7 +1345,7 @@ impl Gui {
                 }
             };
             let perspective = matches!(target, Target::Surface { .. });
-            let ppp = ctx.pixels_per_point();
+            let ppp = ppp_out;
             // Whether an item can colour any pixel of the view, in two
             // halves: its bounds (turned, clipped) in the canvas, kept with
             // its triangles (None: nothing to draw)...
@@ -1863,6 +1865,7 @@ impl Gui {
     /// Whether a mouse wheel at screen point `p` lands on a GUI object that
     /// consumes scroll / pointer input (an Active/sink object, ScrollingFrame, or UIPageLayout).
     pub fn sinks_wheel_at(&self, p: Pos2) -> bool {
+        let p = self.pointer_map.map_or(p, |m| m * p);
         self.hits.iter().rev().any(|h| {
             (h.sink || h.scrolling || h.page_layout.is_some())
                 && point_in_quad(&h.quad, p)
@@ -1894,7 +1897,61 @@ impl Gui {
     }
 
     pub fn input(&mut self, ctx: &egui::Context, resp: &egui::Response, rect: Rect) -> bool {
-        let pointer = self.pointer_override.or(resp.hover_pos()).filter(|p| rect.contains(*p));
+        let from = self.events.len();
+        let took = self.input_pointer(ctx, resp, rect);
+        if let Some(id) = self.touch_id {
+            self.as_touch(from, id);
+        }
+        took
+    }
+
+    /// Mouse-as-touch: this frame's mouse InputObjects become the finger's
+    /// (left button), hover-only and right-button / wheel input goes.
+    fn as_touch(&mut self, from: usize, id: u32) {
+        let events = self.events.split_off(from);
+        for ev in events {
+            let GuiEvent::Fire(r, name, args) = &ev else {
+                self.events.push(ev);
+                continue;
+            };
+            let input = args.iter().find_map(|a| match a {
+                GuiArg::Input { button, began, .. } => Some((*button, *began)),
+                _ => None,
+            });
+            // The finger's InputObject in place of the mouse's (Activated's
+            // too: buttons read its UserInputType), the other arguments kept.
+            let touch = |state: u8| {
+                let args = args
+                    .iter()
+                    .map(|a| match a {
+                        GuiArg::Input { x, y, .. } => GuiArg::Touch { id, state, x: *x, y: *y },
+                        other => other.clone(),
+                    })
+                    .collect();
+                Some(GuiEvent::Fire(*r, name, args))
+            };
+            let keep = match (input, *name) {
+                (None, "MouseButton2Down" | "MouseButton2Up" | "MouseButton2Click" | "MouseWheelForward" | "MouseWheelBackward") => None,
+                (None, _) => Some(ev.clone()),
+                (Some((1, _)), "InputBegan") => touch(0),
+                (Some((1, _)), "InputChanged") => touch(1),
+                (Some((1, began)), _) => touch(if began { 0 } else { 2 }),
+                (Some((0, _)), "InputChanged") => touch(1),
+                _ => None,
+            };
+            self.events.extend(keep);
+        }
+    }
+
+    fn input_pointer(&mut self, ctx: &egui::Context, resp: &egui::Response, rect: Rect) -> bool {
+        // (a simulated device: window points to its points, where it was laid
+        // out; a finger touches only while pressed: no hover)
+        let map = self.pointer_map;
+        let touching = self.touch_id.is_none()
+            || ctx.input(|i| i.pointer.primary_down() || i.pointer.primary_released() || i.pointer.primary_pressed());
+        let pointer = self.pointer_override.or(resp.hover_pos())
+            .map(|p| map.map_or(p, |m| m * p))
+            .filter(|p| rect.contains(*p) && touching);
         let under: Vec<Hit> = match pointer {
             Some(p) => self
                 .hits
@@ -2719,6 +2776,8 @@ impl Gui {
     /// clicked while editing). Empty transparent containers (a full-screen
     /// BackgroundTransparency=1 Frame holding a layout) are clicked through.
     pub fn object_at(&self, p: Pos2) -> Option<Ref> {
+        // (window points; a simulated device's GUI was laid out in its own)
+        let p = self.pointer_map.map_or(p, |m| m * p);
         self.hits
             .iter()
             .rev()
@@ -2764,6 +2823,34 @@ fn contains_pixel_center(lo: f32, hi: f32, ppp: f32) -> bool {
     let lo = lo * ppp - 0.5;
     let hi = hi * ppp - 0.5;
     hi - lo > 1.0 || hi.floor() >= lo.ceil()
+}
+
+/// A Play ScreenGui's canvas: where it is drawn, its size and its
+/// AbsolutePosition. `rect` is the view (a simulated device's safe area),
+/// `screen` the whole screen: ScreenInsets None covers it, notch and all
+/// (measured, iPhone 14 landscape: (-47, -58) 843x389); DeviceSafeInsets
+/// is the view; CoreUISafeInsets the view below the top bar; TopbarSafeInsets
+/// the bar's free area (`bar`, GuiService.TopbarInset).
+fn screen_root(rect: Rect, screen: Rect, insets: Option<u32>, inset: f32, bar: crate::ltypes::LRect) -> (Target, [f32; 2], [f32; 2]) {
+    if insets == Some(3) {
+        return (
+            Target::Screen(rect.min + egui::vec2(bar.min.x, bar.min.y)),
+            (bar.max - bar.min).to_array(),
+            [bar.min.x, bar.min.y - mech::GUI_TOP_INSET],
+        );
+    }
+    if insets == Some(0) && inset == 0.0 {
+        return (
+            Target::Screen(screen.min),
+            [screen.width(), screen.height()],
+            [screen.min.x - rect.min.x, screen.min.y - rect.min.y - mech::GUI_TOP_INSET],
+        );
+    }
+    (
+        Target::Screen(Pos2::new(rect.left(), rect.top() + inset)),
+        [rect.width(), rect.height() - inset],
+        [0.0, inset - mech::GUI_TOP_INSET],
+    )
 }
 
 fn place_3d(
@@ -3639,5 +3726,28 @@ mod edit_screen_gui_tests {
         let laid = gui.layout.get(&frame).copied().expect("ScreenGui inside Folder in StarterGui should lay out");
         assert_eq!(laid.pos, [20.0, 30.0]);
         assert_eq!(laid.size, [100.0, 50.0]);
+    }
+}
+
+#[cfg(test)]
+mod device_screen_tests {
+    use super::*;
+    use crate::ltypes::LRect;
+
+    #[test]
+    fn none_screen_gui_covers_the_notch() {
+        // iPhone 14 landscape (measured): the safe area is 749 wide, 47 in
+        let screen = Rect::from_min_size(Pos2::ZERO, egui::vec2(843.0, 389.0));
+        let rect = Rect::from_min_max(Pos2::new(47.0, 0.0), Pos2::new(796.0, 389.0));
+        let bar = LRect { min: glam::Vec2::new(164.0, 0.0), max: glam::Vec2::new(749.0, 58.0) };
+        let (_, canvas, off) = screen_root(rect, screen, Some(0), 0.0, bar);
+        assert_eq!((canvas, off), ([843.0, 389.0], [-47.0, -58.0]));
+        let (_, canvas, off) = screen_root(rect, screen, Some(1), 0.0, bar);
+        assert_eq!((canvas, off), ([749.0, 389.0], [0.0, -58.0]));
+        let (_, canvas, off) = screen_root(rect, screen, Some(2), 58.0, bar);
+        assert_eq!((canvas, off), ([749.0, 331.0], [0.0, 0.0]));
+        // no device: the screen is the view, as before
+        let (_, canvas, off) = screen_root(rect, rect, Some(0), 0.0, bar);
+        assert_eq!((canvas, off), ([749.0, 389.0], [0.0, -58.0]));
     }
 }

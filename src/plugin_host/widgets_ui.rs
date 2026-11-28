@@ -1472,6 +1472,7 @@ impl Editor {
             cam_sent,
             dt,
             vp_rect,
+            device: self.game.device_input(),
         }
     }
 
@@ -1575,6 +1576,9 @@ pub(super) struct PluginUiFlush {
     pub(super) cam_sent: Option<(rustudio_core::math::Xform, glam::Vec3, f32)>,
     dt: f32,
     vp_rect: Option<Rect>,
+    /// The simulated device: edit-mode scripts and plugins see its input
+    /// flags too (measured: a phone makes TouchEnabled true in edit mode).
+    device: rustudio_engine::runtime::ext::DeviceInput,
 }
 
 pub(super) fn apply_plugin_ui_flush(
@@ -1592,6 +1596,7 @@ pub(super) fn apply_plugin_ui_flush(
         if let Some(rect) = view.rect.or(flush.vp_rect) {
             w.input.view_size = [rect.width(), rect.height()];
         }
+        w.input.device = flush.device;
         let next_xy = view.xy.unwrap_or([-1.0, -1.0]);
         mouse_changed = w.input.mouse_xy != next_xy;
         w.input.mouse_xy = next_xy;
@@ -1621,6 +1626,7 @@ pub(super) fn apply_plugin_ui_flush(
             *cam_sent = Some(now);
         }
     }
+    let _ = rustudio_engine::runtime::ext::fire_device_changes(lua);
     if layout_changed {
         let _ = rustudio_engine::runtime::ext::fire_layout_changes(lua);
     }

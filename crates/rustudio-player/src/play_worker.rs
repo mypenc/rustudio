@@ -200,6 +200,30 @@ mod tests {
     /// PlayView.settings so toggling CameraYInverted On then Off (even after
     /// the 1 s `shown` window expires), changing MouseSensitivity, and
     /// changing MasterVolume all round-trip cleanly.
+    /// A threaded Play on a phone: scripts that start with Play see the
+    /// phone, not a desktop, even before the first frame.
+    #[test]
+    fn threaded_play_starts_with_the_simulated_flags() {
+        let mut game = Game::new(None);
+        let root = game.doc.dom.root_ref();
+        let rf = game.doc.find_child(root, "ReplicatedFirst")
+            .unwrap_or_else(|| game.doc.dom.insert(root, rbx_dom_weak::InstanceBuilder::new("ReplicatedFirst").with_name("ReplicatedFirst")));
+        game.doc.dom.insert(rf, rbx_dom_weak::InstanceBuilder::new("LocalScript").with_property("Source", r#"
+            _G.pref = game:GetService("UserInputService").PreferredInput.Name
+        "#.to_string()));
+        let panel = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1914.0, 718.0));
+        let view = crate::device_view::DeviceView::layout(panel, rustudio_core::devices::preset("iphone_14").unwrap(),
+            rustudio_core::devices::Orientation::Landscape, crate::device_view::Scaling::FitToWindow,
+            rustudio_core::devices::Insets::default(), 96.0, 1.0);
+        game.viewport_rect = view.screen_win;
+        game.device = Some(view);
+        game.fixed_dt = Some(1.0 / 60.0);
+        game.start_play_threaded(RunMode::Play, &mut (), false, None);
+        assert!(game.has_play_worker());
+        let e = game.run_luau(Side::Client, "error('PREF[' .. tostring(_G.pref) .. ']', 0)").unwrap_or_default();
+        assert!(e.contains("PREF[Touch]"), "{e}");
+    }
+
     #[test]
     fn game_menu_settings_round_trip_with_play_worker() {
         use crate::play::game::game_menu::MenuPage;
@@ -473,6 +497,9 @@ struct Input {
     keyboard: PlayKeyboard,
     phys: PhysicalKeys,
     viewport: Rect,
+    device: Option<crate::device_view::DeviceView>,
+    input_flip: crate::game::InputFlip,
+    controller_on: bool,
     editor_camera: Option<Camera>,
     frame_no: u64,
     profile_lua: bool,
@@ -483,6 +510,7 @@ struct Input {
     mouse_moved: bool,
     mouse_move_processed: bool,
     mouse_buttons: Vec<(u8, bool, bool)>,
+    touch_input: Vec<(crate::touch::TouchEvent, bool)>,
     wheel: f32,
     wheel_processed: bool,
     menu_open: bool,
@@ -505,6 +533,9 @@ impl Input {
             keyboard,
             phys: game.phys.clone(),
             viewport: game.viewport_rect,
+            device: game.device.clone(),
+            input_flip: game.input_flip,
+            controller_on: game.controller_on,
             editor_camera: (s.showing == Side::Server).then(|| game.cam.clone()),
             frame_no: game.frame_no,
             profile_lua: rustudio_core::bench::lua_prof_on(),
@@ -515,6 +546,7 @@ impl Input {
             mouse_moved: std::mem::take(&mut s.mouse_moved),
             mouse_move_processed: std::mem::take(&mut s.mouse_move_processed),
             mouse_buttons: std::mem::take(&mut p.uis_mouse),
+            touch_input: std::mem::take(&mut p.touch_input),
             wheel: std::mem::take(&mut s.wheel),
             wheel_processed: std::mem::take(&mut s.wheel_processed),
             menu_open: p.menu_open,
@@ -533,6 +565,9 @@ impl Input {
         self.edits.apply(game);
         game.phys = self.phys;
         game.viewport_rect = self.viewport;
+        game.device = self.device;
+        game.input_flip = self.input_flip;
+        game.controller_on = self.controller_on;
         if let Some(camera) = self.editor_camera {
             game.cam = camera;
         }
@@ -558,6 +593,7 @@ impl Input {
             s.mouse_moved |= self.mouse_moved;
             s.mouse_move_processed |= self.mouse_move_processed;
             p.uis_mouse.extend(self.mouse_buttons);
+            p.touch_input.extend(self.touch_input);
             s.wheel += self.wheel;
             s.wheel_processed |= self.wheel_processed;
             p.menu_open = self.menu_open;
@@ -831,6 +867,10 @@ impl Game {
         let show_client = self.play_shows_client;
         let keep_game_settings = self.keep_game_settings;
         let fixed_dt = self.fixed_dt;
+        // The view and the simulated device as Play starts: client scripts
+        // that start with it (the PlayerModule) read the device's input
+        // before the first frame's input reaches the worker.
+        let (viewport_rect, device, input_flip, controller_on) = (self.viewport_rect, self.device.clone(), self.input_flip, self.controller_on);
         let teleport = self.teleport_to.take();
         if teleport.is_none() {
             self.play_origin = live_ids;
@@ -846,6 +886,10 @@ impl Game {
             game.play_shows_client = show_client;
             game.keep_game_settings = keep_game_settings;
             game.fixed_dt = fixed_dt;
+            game.viewport_rect = viewport_rect;
+            game.device = device;
+            game.input_flip = input_flip;
+            game.controller_on = controller_on;
             game.start_play(mode, worker_host, false, live_ids);
         }) {
             Ok(worker) => worker,

@@ -67,6 +67,9 @@ pub enum Tab {
     AssetManager,
     /// File Sync (src/file_sync): the project attached to the place.
     FileSync,
+    /// The Device Simulator's Controller Emulator (src/device_sim/controller.rs):
+    /// open, the virtual controller is on.
+    ControllerEmulator,
     /// View > MicroProfiler (Ctrl+F6): the profiler window
     /// (crates/rustudio-profiler-ui), its own OS window by default.
     Profiler,
@@ -90,6 +93,7 @@ impl Tab {
             Tab::Toolbox => "Toolbox",
             Tab::AssetManager => "Asset Manager",
             Tab::FileSync => "File Sync",
+            Tab::ControllerEmulator => "Controller Emulator",
             Tab::Profiler => "MicroProfiler",
             Tab::Script(_) => "Script",
             Tab::Plugin(_) => "Plugin",
@@ -133,6 +137,9 @@ pub struct Harness {
     pub plugin_dirs: Vec<PathBuf>,
     pub no_plugins: bool,
     pub plugins_started: bool,
+    /// `--device ID [--portrait]`: the Device Simulator shows that device
+    /// (this run only).
+    pub device: Option<(String, bool)>,
 }
 
 #[cfg(test)]
@@ -146,6 +153,7 @@ impl Harness {
                     actions: Vec::new(),
                     pointer: None,
                     shift: false,
+                    mods: egui::Modifiers::NONE,
                 },
                 started: rustudio_core::sim_clock::now(),
                 held: 0.0,
@@ -189,6 +197,7 @@ impl Harness {
             plugin_dirs: Vec::new(),
             no_plugins: true,
             plugins_started: false,
+            device: None,
         }
     }
 }
@@ -287,6 +296,8 @@ pub struct Editor {
     pub last_zoom: Option<(Vec3, Option<f32>)>,
     pub hud: HudStats,
     pub ui_rects: HashMap<&'static str, egui::Rect>,
+    /// Test > Device Simulator: the simulated device and how it is shown.
+    pub device_sim: crate::device_sim::DeviceSim,
     /// Screen positions of gizmo handles last frame (axis, sign) -> point.
     pub gizmo_points: Vec<(crate::viewport::Handle, egui::Pos2)>,
     /// Selection / hover outlines kept while nothing they depend on changes.
@@ -488,6 +499,7 @@ impl RustudioApp {
             last_zoom: None,
             hud: HudStats::default(),
             ui_rects: HashMap::new(),
+            device_sim: crate::device_sim::DeviceSim::load(),
             gizmo_points: Vec::new(),
             outline_cache: Default::default(),
             hover_outline_refs: (None, Vec::new()),
@@ -536,6 +548,20 @@ impl RustudioApp {
         // unless --overlays keeps the editor's overlays.
         if ed.harness.run.no_ui && !ed.harness.overlays {
             ed.clean_view = true;
+        }
+        // Custom devices (Manage devices) are a person's own: read only in
+        // runs a person drives.
+        if crate::layout_store::enabled(&ed.harness) {
+            ed.device_sim.load_custom();
+        }
+        if let Some((id, portrait)) = ed.harness.device.clone() {
+            ed.device_sim.shown = true;
+            ed.device_sim.select(Some(&id));
+            ed.device_sim.orientation = if portrait {
+                rustudio_core::devices::Orientation::Portrait
+            } else {
+                rustudio_core::devices::Orientation::Landscape
+            };
         }
         ed.ui.show_core_gui = ed.harness.run.show_core_gui;
         ed.game.show_core_gui = ed.harness.run.show_core_gui;
@@ -1627,6 +1653,7 @@ impl Editor {
         match a {
             "undo" => self.undo(),
             "redo" => self.redo(),
+            a if (a.starts_with("device") || a == "device_simulator") && self.device_sim_action(a) => {}
             "copy" => {
                 self.copy();
             }
@@ -1936,6 +1963,7 @@ impl TabViewer for Viewer<'_> {
             Tab::Toolbox => self.ed.toolbox_ui(ui),
             Tab::AssetManager => self.ed.asset_manager_ui(ui),
             Tab::FileSync => self.ed.file_sync_panel_ui(ui),
+            Tab::ControllerEmulator => self.ed.controller_emulator_ui(ui),
             Tab::Profiler => {
                 let rect = ui.available_rect_before_wrap();
                 let mut c = ui.new_child(egui::UiBuilder::new().max_rect(rect));
@@ -2503,7 +2531,7 @@ impl RustudioApp {
             for t in popped {
                 if self.dock.find_tab(&t).is_none()
                     && native_tab_enabled(t, self.ed.builtin_tools)
-                    && !matches!(t, Tab::AvatarSettings | Tab::TerrainEditor | Tab::Toolbox | Tab::AssetManager | Tab::FileSync)
+                    && !matches!(t, Tab::AvatarSettings | Tab::TerrainEditor | Tab::Toolbox | Tab::AssetManager | Tab::FileSync | Tab::ControllerEmulator)
                 {
                     crate::panels::place(&mut self.dock, t, &self.panels.homes);
                 }
@@ -2710,12 +2738,16 @@ impl RustudioApp {
             (Tab::Toolbox, "Toolbox"),
             (Tab::AssetManager, "Asset Manager"),
             (Tab::FileSync, "File Sync"),
+            (Tab::ControllerEmulator, "Controller Emulator"),
             (Tab::Profiler, "MicroProfiler"),
         ]
         .into_iter()
         .filter(|(t, _)| self.panels.locate(&self.dock, t).is_some())
         .map(|(_, n)| n)
         .collect();
+        // The Controller Emulator's panel is the controller's switch (its
+        // tab's close button turns it off).
+        self.ed.device_sim.controller = self.ed.ui.panels_open.contains("Controller Emulator");
         // Closing the MicroProfiler stops recording.
         if self.ed.profiler.is_some() && !self.ed.ui.panels_open.contains("MicroProfiler") {
             self.ed.profiler = None;
@@ -2842,6 +2874,9 @@ impl RustudioApp {
             // The Toolbox's deep links work without the panel (headless checks).
             if a.starts_with("toolbox:") {
                 ed.toolbox_action(&a);
+            } else if a.starts_with("device") {
+                // (the Device Simulator lives in the view: no panel needed)
+                ed.run_action(&a);
             } else {
                 eprintln!("--action {a}: no editor in --no-ui");
             }
@@ -2927,7 +2962,7 @@ impl Editor {
 impl Editor {
     pub fn harness_inject(&mut self, raw: &mut egui::RawInput) {
         let mut input = std::mem::take(&mut self.harness.run.input);
-        input.inject(self.game.viewport_rect, self.game.lock_center_held(), self.harness.run.now(), raw, |name, raw| {
+        input.inject(self.game.viewport_rect, self.game.device.as_ref().map_or(1.0, |v| v.k), self.game.lock_center_held(), self.harness.run.now(), raw, |name, raw| {
             if self.plugin_widget_action(&name, raw) {
                 // plugin-widget:PLUGIN/WIDGET:CMD
             } else if self.harness_pointer(&name, raw) {

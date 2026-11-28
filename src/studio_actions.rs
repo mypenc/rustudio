@@ -107,6 +107,16 @@ impl Editor {
                 }
             }
             "asset_manager" => (true, open("Asset Manager")),
+            // Test > Device Simulator: greyed (with its check) during Play,
+            // as Studio; the device can still be switched or turned.
+            "device_simulator" => (edit, Some(self.device_sim.shown)),
+            "device_rotate" => (self.device_sim.shown && self.device_sim.current().is_some_and(|d| d.rotates()), None),
+            "device_back" => (playing && self.device_sim.current().is_some_and(|d| d.platform == rustudio_core::devices::Platform::Android), None),
+            "device_controller" => (self.device_sim.shown || self.device_sim.controller, Some(self.device_sim.controller)),
+            // Test > Controller Emulator: the same switch as the bar's button.
+            "controller_emulator" => (true, Some(self.device_sim.controller)),
+            a if a.starts_with("device:") || a.starts_with("device_form:") => (self.device_sim.shown || edit, None),
+            a if a.starts_with("device_") => (self.device_sim.shown, None),
             "microprofiler" => (true, open("MicroProfiler")),
             a if a.starts_with("toolbox:") => (
                 self.builtin_tools.use_native(rustudio_core::rustudio_settings::BuiltinTool::Toolbox),
@@ -501,6 +511,9 @@ impl Editor {
             "asset_manager" => self.ui.panel_requests.push((Tab::AssetManager, None)),
             "file_sync" => self.ui.panel_requests.push((Tab::FileSync, Some(true))),
             "microprofiler" => self.ui.panel_requests.push((Tab::Profiler, None)),
+            "controller_emulator" => self.run_action("device_controller"),
+            // (the Device Simulator's bar and menus: --action too)
+            a if a.starts_with("device") => self.run_action(a),
             a if a.starts_with("toolbox:") => self.toolbox_action(a),
             "about" => self.ui.about = true,
             "logs_folder" => {

@@ -250,6 +250,17 @@ pub struct World {
     pub abs_seen: HashMap<Ref, ext::AbsBox>,
     pub scroll_seen: HashMap<Ref, ([f32; 2], [f32; 2])>,
     pub viewport_seen: Option<[f32; 2]>,
+    /// The simulated device and its pad as scripts last saw them
+    /// (`ext::fire_device_changes`), and a CurrentScreenOrientation change
+    /// due next frame.
+    pub device_seen: Option<ext::DeviceInput>,
+    pub pad_seen: Option<u8>,
+    pub orientation_due: bool,
+    /// MouseEnabled / KeyboardEnabled as last announced (Changed).
+    pub kbm_seen: Option<[bool; 2]>,
+    /// Since the last touch turned the keyboard flip off on this device,
+    /// MouseEnabled / KeyboardEnabled change silently.
+    pub kbm_quiet: bool,
     /// GUI instances with live connections or waiters.
     pub gui_listening: rustc_hash::FxHashSet<Ref>,
     pub layout_listening: rustc_hash::FxHashSet<Ref>,
@@ -767,6 +778,11 @@ impl World {
             abs_seen: HashMap::new(),
             scroll_seen: HashMap::new(),
             viewport_seen: None,
+            device_seen: None,
+            pad_seen: None,
+            orientation_due: false,
+            kbm_seen: None,
+            kbm_quiet: false,
             gui_listening: Default::default(),
             layout_listening: Default::default(),
             listen_new: Default::default(),
@@ -6789,6 +6805,21 @@ impl Runtime {
                     length = length.max(t);
                 }
                 Ok((joints, frames, length))
+            })?,
+        )?;
+        // The simulated device's whole screen and safe-area corner (the
+        // camera projects over the whole screen), and its ten-foot flag:
+        // zeros with no device (library.luau cam_basis, IsTenFootInterface).
+        g.set(
+            "__rs_view_frame",
+            lua.create_function(|lua, ()| {
+                let w = world(lua)?;
+                let dev = w.input.device;
+                if !dev.simulated {
+                    return Ok((0.0f32, 0.0f32, 0.0f32, 0.0f32, false, false, false));
+                }
+                let [sw, sh] = dev.screen_or(w.input.view_size);
+                Ok((sw, sh, dev.safe[0], dev.safe[1], true, dev.portrait, dev.flags.ten_foot))
             })?,
         )?;
         // A public asset's download state: true (on disk), false (downloading

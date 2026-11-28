@@ -38,6 +38,7 @@ pub mod class_icons;
 pub mod bin_dump;
 #[cfg(unix)]
 pub mod control;
+pub mod device_sim;
 pub mod coverage;
 pub mod explorer;
 pub mod file_dialog;
@@ -184,6 +185,9 @@ usage: rustudio [FILE] [--demo] [--play] [--screenshot OUT.png] [--self-test OUT
                        pixels X,Y S seconds after start (hover, press, release)
   --key NAME@S         press a key (egui name, e.g. Enter, B) S seconds after start
   --window WxH         window size for test runs
+  --device ID          show the Device Simulator on that device (Studio's ids:
+                       iphone_14, ipad_10th_generation, xbox, hd_1080, ...)
+  --portrait           with --device: a phone or tablet turned upright
   --camera X,Y,Z,YAW,PITCH  start the editor camera there (degrees)
   --bench FILE         measure frame times (after a 3 s warm-up) for N seconds
                        (default 10) at 1265x900 without vsync, write JSON, exit
@@ -683,6 +687,8 @@ pub fn run() -> eframe::Result<()> {
     let mut local_copy = false;
     let mut no_ui = false;
     let mut overlays = false;
+    let mut device: Option<String> = None;
+    let mut portrait = false;
     let mut headless = false;
     let mut no_render = false;
     let mut show_core_ui: Option<bool> = None;
@@ -841,6 +847,17 @@ pub fn run() -> eframe::Result<()> {
             "--window" => {
                 args.next();
             }
+            // The Device Simulator on that device (Studio's device ids).
+            "--device" => {
+                let id = args.next().unwrap_or_default();
+                if rustudio_core::devices::preset(&id).is_none() {
+                    let ids: Vec<&str> = rustudio_core::devices::presets().iter().map(|d| d.id.as_str()).collect();
+                    eprintln!("--device: no device {id:?}; one of: {}", ids.join(", "));
+                    std::process::exit(2);
+                }
+                device = Some(id);
+            }
+            "--portrait" => portrait = true,
             "--seconds" => {
                 seconds = args.next().and_then(|s| s.parse().ok()).unwrap_or(seconds);
                 seconds_given = true;
@@ -1108,7 +1125,7 @@ pub fn run() -> eframe::Result<()> {
         run: run_harness::RunHarness {
             shot_after,
             log_out,
-            input: run_harness::HarnessInput { actions, pointer: None, shift: false },
+            input: run_harness::HarnessInput { actions, pointer: None, shift: false, mods: egui::Modifiers::NONE },
             started: rustudio_core::sim_clock::now(),
             held: 0.0,
             screenshot,
@@ -1157,6 +1174,7 @@ pub fn run() -> eframe::Result<()> {
         plugin_dirs,
         no_plugins,
         plugins_started: false,
+        device: device.map(|id| (id, portrait)),
     };
     // No vsync when measuring, so frame times show the real cost.
     // (--fixed-dt: as fast as the machine allows)

@@ -55,7 +55,8 @@ impl SavedTab {
             Tab::AssetManager => SavedTab::AssetManager,
             Tab::FileSync => SavedTab::FileSync,
             Tab::Profiler => SavedTab::Profiler,
-            Tab::Script(_) | Tab::Plugin(_) => return None,
+            // (the Controller Emulator starts closed: the controller is off)
+            Tab::Script(_) | Tab::Plugin(_) | Tab::ControllerEmulator => return None,
         })
     }
     pub(crate) fn tab(self) -> Tab {

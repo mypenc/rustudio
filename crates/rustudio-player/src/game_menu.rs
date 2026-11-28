@@ -195,6 +195,24 @@ struct Asked {
 }
 
 impl Game {
+    /// The Device Simulator's Android back button: Roblox's in-game menu
+    /// opens or closes (GuiService.MenuOpened fires), with no key event
+    /// (measured in Studio). With Roblox's CoreScripts it is their
+    /// SettingsHub.
+    pub fn android_back(&mut self) {
+        let core_scripts = self.play.as_ref().is_some_and(|s| s.game.core_scripts_active);
+        if !core_scripts {
+            self.toggle_game_menu();
+            return;
+        }
+        let _ = self.run_luau_as(
+            rustudio_engine::runtime::Side::Client,
+            r#"local hub = require(game:GetService("CoreGui").RobloxGui.Modules.Settings.SettingsHub)
+hub:ToggleVisibility()"#,
+            rustudio_engine::runtime::security::CORE,
+        );
+    }
+
     /// Esc during Play opens (and closes) the in-game menu, as in Roblox; a
     /// focused TextBox or the chat box take Esc first. On a confirmation
     /// page Esc goes back to the tab it came from (SettingsHub:PopMenu).
