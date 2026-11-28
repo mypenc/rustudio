@@ -269,7 +269,7 @@ local function CollisionGroupsApp()
 			TextSize = 13,
 			TextColor3 = Color3.fromRGB(255, 255, 255),
 			Text = function()
-				return if collides() then "✓" else ""
+				return if collides() then "✔" else ""
 			end,
 			Activated = function()
 				local a = readA()

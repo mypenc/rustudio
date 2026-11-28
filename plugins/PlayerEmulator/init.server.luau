@@ -713,7 +713,7 @@ local function PlayerEmulatorApp()
 														Font = Enum.Font.SourceSansBold,
 														TextSize = 11,
 														TextColor3 = Color3.fromRGB(255, 255, 255),
-														Text = function() return if checked() then "✓" else "" end,
+														Text = function() return if checked() then "✔" else "" end,
 													},
 												},
 											},

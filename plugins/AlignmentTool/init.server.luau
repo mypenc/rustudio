@@ -305,7 +305,7 @@ local function StudioCheck(label: string, checked: () -> boolean, onClick: () ->
 						TextSize = 12,
 						TextColor3 = Color3.fromRGB(255, 255, 255),
 						Text = function()
-							return if checked() then "✓" else ""
+							return if checked() then "✔" else ""
 						end,
 					},
 				},

@@ -124,7 +124,7 @@ local function TagRow(
 				Text = function()
 					local st = info().check
 					if st == "all" then
-						return "✓"
+						return "✔"
 					elseif st == "some" then
 						return "–"
 					end

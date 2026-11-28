@@ -1724,7 +1724,7 @@ fn bundled_vide_tag_editor_mounts_reacts_and_unmounts_cleanly() {
     let chk = doc.find_named(row_interactable, "Checkbox").expect("Checkbox");
     assert_eq!(
         doc.prop(chk, "Text"),
-        Some(Variant::String("✓".into())),
+        Some(Variant::String("✔".into())),
         "selected tagged part should show checked state"
     );
     let badge = doc.find_named(row_spawn, "CountBadge").expect("CountBadge");
@@ -1878,7 +1878,7 @@ fn bundled_vide_suite_plugins_load_act_and_unmount_cleanly() {
     host.trigger(super::Trigger::Fire(sel_def, "Activated"));
     frames(&mut host, &mut doc, 3);
     let def_toggle = doc.find_named(cg_w, "Toggle_Default").expect("Toggle_Default");
-    assert_eq!(doc.prop(def_toggle, "Text"), Some(Variant::String("✓".into())));
+    assert_eq!(doc.prop(def_toggle, "Text"), Some(Variant::String("✔".into())));
     host.trigger(super::Trigger::Fire(def_toggle, "Activated"));
     frames(&mut host, &mut doc, 3);
     assert_eq!(doc.prop(def_toggle, "Text"), Some(Variant::String("".into())));

@@ -152,7 +152,7 @@ local function ForceVisOverlay()
 							Font = Enum.Font.SourceSansBold,
 							TextSize = 10,
 							TextColor3 = Color3.fromRGB(255, 255, 255),
-							Text = function() return if sig() then "✓" else "" end,
+							Text = function() return if sig() then "✔" else "" end,
 						},
 					},
 				},
