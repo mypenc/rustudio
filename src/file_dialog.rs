@@ -45,6 +45,13 @@ pub enum Purpose {
     AnimExportRbxm,
     /// File > Import Studio Content…: the zip the "Studio content" workflow makes.
     ImportStudioContent,
+    /// A modular native plugin's file picker / save dialog (routed back to
+    /// `NativePlugin::on_file_dialog(tag, path, ctx)`).
+    NativePlugin { plugin_id: String, tag: String },
+    /// Experience Settings > Basic Info > Upload Game Icon.
+    GameSettingsIcon,
+    /// Experience Settings > Basic Info > Add Screenshot.
+    GameSettingsThumbnail,
 }
 
 pub enum Kind {

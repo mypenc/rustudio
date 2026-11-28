@@ -329,6 +329,39 @@ fn named(dom: &WeakDom, parent: Ref, name: &str) -> Option<Ref> {
         .find(|c| dom.get_by_ref(*c).is_some_and(|i| i.name == name))
 }
 
+fn ensure_roblox_gui(doc: &mut Document, core_gui: Ref) {
+    let rg = named(&doc.dom, core_gui, "RobloxGui").unwrap_or_else(|| {
+        doc.dom.insert(
+            core_gui,
+            InstanceBuilder::new("ScreenGui")
+                .with_name("RobloxGui")
+                .with_property("ResetOnSpawn", false)
+                .with_property("ZIndexBehavior", Variant::Enum(rbx_dom_weak::types::Enum::from_u32(1))),
+        )
+    });
+    // Roblox's C++ engine creates RobloxGui.ControlFrame.BottomLeftControl;
+    // StarterScript.lua waits on them for touch devices before starting
+    // ExperienceChatMain, InspectAndBuy, SystemScrim, etc.
+    let cf = named(&doc.dom, rg, "ControlFrame").unwrap_or_else(|| {
+        doc.dom.insert(
+            rg,
+            InstanceBuilder::new("Frame")
+                .with_name("ControlFrame")
+                .with_property("BackgroundTransparency", 1.0_f32)
+                .with_property("BorderSizePixel", 0_i32),
+        )
+    });
+    if named(&doc.dom, cf, "BottomLeftControl").is_none() {
+        doc.dom.insert(
+            cf,
+            InstanceBuilder::new("Frame")
+                .with_name("BottomLeftControl")
+                .with_property("BackgroundTransparency", 1.0_f32)
+                .with_property("BorderSizePixel", 0_i32),
+        );
+    }
+}
+
 /// Puts the patch in a client DataModel: `DataModelInstances` into the
 /// services they name (CoreGui gets its `RobloxGui` ScreenGui first, as the
 /// engine makes it), the `CoreScriptLocalization` tables under CoreGui, and
@@ -344,15 +377,7 @@ pub fn install(doc: &mut Document, mut patch: Patch) -> Result<Installed, String
             .unwrap_or_else(|| doc.dom.insert(root, InstanceBuilder::new(class).with_name(class)))
     };
     let core_gui = service(doc, "CoreGui");
-    if named(&doc.dom, core_gui, "RobloxGui").is_none() {
-        doc.dom.insert(
-            core_gui,
-            InstanceBuilder::new("ScreenGui")
-                .with_name("RobloxGui")
-                .with_property("ResetOnSpawn", false)
-                .with_property("ZIndexBehavior", Variant::Enum(rbx_dom_weak::types::Enum::from_u32(1))),
-        );
-    }
+    ensure_roblox_gui(doc, core_gui);
     let tops: Vec<Ref> = patch.dom.get_by_ref(instances).map(|i| i.children().to_vec()).unwrap_or_default();
     let mut touched = vec![core_gui];
     for top in tops {
@@ -396,15 +421,7 @@ fn install_cloned(doc: &mut Document, patch: &Patch) -> Result<Installed, String
             .unwrap_or_else(|| doc.dom.insert(root, InstanceBuilder::new(class).with_name(class)))
     };
     let core_gui = service(doc, "CoreGui");
-    if named(&doc.dom, core_gui, "RobloxGui").is_none() {
-        doc.dom.insert(
-            core_gui,
-            InstanceBuilder::new("ScreenGui")
-                .with_name("RobloxGui")
-                .with_property("ResetOnSpawn", false)
-                .with_property("ZIndexBehavior", Variant::Enum(rbx_dom_weak::types::Enum::from_u32(1))),
-        );
-    }
+    ensure_roblox_gui(doc, core_gui);
     let mut installed = Installed {
         modules: HashMap::with_capacity(patch.bytecode.len()),
         scripts: HashMap::new(),
@@ -616,6 +633,11 @@ mod tests {
         let root = d.dom.root_ref();
         let cg = d.find_child(root, "CoreGui").unwrap();
         let rg = crate::default_scripts::child_named(&d, cg, "RobloxGui").unwrap();
+        let control_frame = crate::default_scripts::child_named(&d, rg, "ControlFrame").expect("RobloxGui.ControlFrame");
+        assert!(
+            crate::default_scripts::child_named(&d, control_frame, "BottomLeftControl").is_some(),
+            "RobloxGui.ControlFrame.BottomLeftControl must exist for mobile StarterScript"
+        );
         let modules = crate::default_scripts::child_named(&d, rg, "Modules").unwrap();
         assert!(crate::default_scripts::child_named(&d, modules, "TopBar").is_some());
         let cp = d.find_child(root, "CorePackages").unwrap();
