@@ -534,9 +534,44 @@ pub enum Lookup {
 }
 
 /// A table entry's maps: ready, being fetched (queued on first ask), or
-/// unavailable (no pack, or the fetch failed).
+/// unavailable (no pack, the fetch failed, or the shader isn't sampling
+/// material maps: `set_maps_wanted`).
 pub fn maps(e: &Entry) -> Lookup {
+    if !maps_wanted() {
+        return Lookup::Unavailable(MAPS_UNWANTED.into());
+    }
     pack_maps(e.pack, e.color)
+}
+
+const MAPS_UNWANTED: &str = "material maps are off at this shading detail";
+
+/// The part and terrain shaders skip the material maps at shading detail Low,
+/// and under Automatic quality below its High tier (shader.wgsl
+/// `cheap_material`, `TERRAIN_LOW`): they draw the flat table colour. Fetching,
+/// decoding (14 MB a pack) and uploading maps nobody samples cost memory and
+/// time on exactly the weak graphics chips that run in those tiers, so while
+/// the shader isn't sampling them the packs aren't asked for.
+static MAPS_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Whether the shader samples material maps for this frame's quality profile
+/// (`None`: Manual, the Performance page's shading detail decides).
+pub fn maps_wanted_for(quality: Option<crate::quality::Profile>) -> bool {
+    match quality {
+        Some(profile) => profile.detail() >= 2.0,
+        None => rustudio_core::rustudio_settings::performance_value("detail") != "low",
+    }
+}
+
+/// Set once a frame from `maps_wanted_for`. A change rebuilds the draws
+/// (`generation`), so packs start loading when the shader begins to use them.
+pub fn set_maps_wanted(on: bool) {
+    if MAPS_WANTED.swap(on, Ordering::Relaxed) != on {
+        store().generation.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub fn maps_wanted() -> bool {
+    MAPS_WANTED.load(Ordering::Relaxed)
 }
 
 /// A pack's maps by id (terrain packs, round 21): as `maps`; `color` stands
@@ -755,6 +790,9 @@ fn height_chain(image: Option<&rustudio_core::texture::Rgba>) -> Vec<u8> {
 /// Terrain uses height in albedo alpha, while parts use the original tint mask.
 /// Give this view a separate atlas cache key so sharing a pack cannot change parts.
 pub fn terrain_pack_maps(pack: u64, color: u32) -> Lookup {
+    if !maps_wanted() {
+        return Lookup::Unavailable(MAPS_UNWANTED.into());
+    }
     pack_maps(terrain_key(pack), color)
 }
 
@@ -893,6 +931,17 @@ mod tests {
         assert_eq!(p.metalness, None);
         assert_eq!(p.tiling, 1.0);
         assert!(parse_pack("<roblox!binary").is_err());
+    }
+
+    /// Material maps are asked for only where the shader samples them: High
+    /// under a quality profile (Automatic), anything but Low when Manual.
+    #[test]
+    fn maps_are_wanted_only_where_the_shader_samples_them() {
+        use crate::quality::Profile;
+        assert!(!maps_wanted_for(Some(Profile::at(1))), "a weak GPU's start level");
+        assert!(!maps_wanted_for(Some(Profile::at(14))), "medium tier");
+        assert!(maps_wanted_for(Some(Profile::at(15))), "high tier");
+        assert!(maps_wanted_for(Some(Profile::at(21))));
     }
 
     #[test]

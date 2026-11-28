@@ -37,6 +37,8 @@ pub enum Purpose {
     TemplateThumb(String),
     /// … another place file for one of the person's templates.
     TemplateReplace(String),
+    /// File > Import Studio Content…: the zip the "Studio content" workflow makes.
+    ImportStudioContent,
     /// A modular native plugin's file picker / save dialog (routed back to
     /// `NativePlugin::on_file_dialog(tag, path, ctx)`).
     NativePlugin { plugin_id: String, tag: String },

@@ -227,6 +227,7 @@ tools (no window; each exits when done):
   --script PLACE PATTERN  print the scripts whose full name contains PATTERN
   --fetch-assets DIR ID…  download public assets by id into DIR
   --install-studio-content  download Studio's built-in content from Roblox's CDN
+  --import-studio-content ZIP  unpack the offline Studio content zip (no internet needed)
   --list-plugins [--json]   the local and installed plugins rustudio would load
   --install-plugin ID       Get (free) + download a Creator Store plugin; --update-plugin ID
   --uninstall-plugin ID     remove an installed plugin from rustudio
@@ -446,6 +447,31 @@ fn window_arg(argv: &[String]) -> Option<(u32, u32)> {
     Some((w.parse().ok()?, h.parse().ok()?))
 }
 
+/// The window failed to open without crashing: a message box (release builds
+/// on Windows have no console) with the way on. `launch_guard` leaves its
+/// marker (the window never drew), so the next launch tries OpenGL.
+fn window_failed(e: &eframe::Error) {
+    let next = if rustudio_core::launch_guard::will_retry_with_opengl() {
+        "The next launch will try OpenGL instead. "
+    } else {
+        ""
+    };
+    let log = rustudio_core::diagnostics::path().map(|p| format!("\n\nLog: {}", p.display())).unwrap_or_default();
+    let message = format!(
+        "rustudio couldn't start its window: {e}\n\n{next}Updating the graphics driver often helps. \
+         If it keeps happening, please report it at https://github.com/rippelz/rustudio/issues with this message.{log}"
+    );
+    log::error!(target: "rustudio::gpu", "{message}");
+    eprintln!("rustudio: {message}");
+    if std::env::var_os("RUSTUDIO_NO_DIALOG").is_none() {
+        rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Error)
+            .set_title("rustudio")
+            .set_description(message)
+            .show();
+    }
+}
+
 /// The whole program: parse the command line and run the editor, a tool
 /// command or a harness run (`src/main.rs` calls this).
 pub fn run() -> eframe::Result<()> {
@@ -537,6 +563,28 @@ pub fn run() -> eframe::Result<()> {
                 std::process::exit(1);
             }
         }
+    }
+    // `--import-studio-content FILE.zip`: unpack the zip the "Studio content"
+    // workflow makes (for a machine with no internet), then exit. A release
+    // build on Windows has no console, so the answer is also a message box.
+    if let Some(i) = std::env::args().position(|a| a == "--import-studio-content") {
+        let Some(zip) = std::env::args().nth(i + 1) else {
+            eprintln!("--import-studio-content needs the zip's path");
+            std::process::exit(2);
+        };
+        let (ok, message) = match rustudio_core::studio_content::import_zip(std::path::Path::new(&zip), &|s| eprintln!("studio content: {s}")) {
+            Ok(summary) => (true, format!("Imported {summary}.")),
+            Err(e) => (false, format!("Couldn't import Studio content: {e}")),
+        };
+        eprintln!("studio content: {message}");
+        if std::env::var_os("RUSTUDIO_NO_DIALOG").is_none() {
+            rfd::MessageDialog::new()
+                .set_level(if ok { rfd::MessageLevel::Info } else { rfd::MessageLevel::Error })
+                .set_title("rustudio")
+                .set_description(message)
+                .show();
+        }
+        std::process::exit(if ok { 0 } else { 1 });
     }
     // `--write-corpus DIR`: the fidelity corpus's place files, then exit.
     let argv: Vec<String> = std::env::args().collect();
@@ -1233,6 +1281,12 @@ pub fn run() -> eframe::Result<()> {
     if std::env::var_os("RUSTUDIO_CONTROL").is_some() {
         viewport = viewport.with_active(false).with_window_level(egui::WindowLevel::AlwaysOnBottom);
     }
+    // A launch whose window never drew (a driver that crashes as the window's
+    // device is made, with no message) makes this one use OpenGL
+    // (crates/rustudio-core/src/launch_guard.rs). Only a window a person
+    // drives: headless and harness runs leave no marker.
+    let person_driven = !headless && layout_store::enabled(&harness);
+    rustudio_core::launch_guard::begin(person_driven);
     let wgpu_options = offscreen::wgpu_options(bench_mode && !(bench_vsync && harness.run.bench.is_some()));
     // --headless / --no-render: no window at all (src/offscreen.rs).
     if headless {
@@ -1273,6 +1327,11 @@ pub fn run() -> eframe::Result<()> {
             Ok(Box::new(app::RustudioApp::new(cc, open, harness, demo)))
         }),
     );
+    // The window couldn't open (no usable adapter or device): say so, since a
+    // release build on Windows has no console to print to.
+    if let (Err(e), true) = (&r, person_driven && rustudio_core::launch_guard::pending()) {
+        window_failed(e);
+    }
     // --fail-on-error (app::Editor::finish_run); a windowed test run's exit
     // status reaches the caller through the headless wrapper's status file.
     let code = app::EXIT_CODE.load(std::sync::atomic::Ordering::Relaxed);

@@ -237,6 +237,9 @@ pub struct Editor {
     /// The selection when the box started (Shift / Ctrl add to it).
     pub marquee_base: Vec<Ref>,
     pub(crate) marquee_centres: crate::viewport::MarqueeCentres,
+    /// Attachments with Visible on, cached by document revision (the green
+    /// spheres Studio draws in the viewport).
+    pub(crate) visible_attachments: crate::viewport::VisibleAttachments,
     /// The Output panel's toolbar choices (src/output_panel.rs).
     pub output_view: crate::output_panel::OutputState,
     /// Dragging parts with the Select / Move tool (src/part_drag.rs).
@@ -424,6 +427,10 @@ impl RustudioApp {
         let wayland = cc.window_handle().ok().map(|h| matches!(h.as_raw(), RawWindowHandle::Wayland(_)));
         let mut app = Self::new_in(&cc.egui_ctx, cc.wgpu_render_state.clone(), wayland, open, harness, demo);
         app.ed.plugins.set_repaint_context(cc.egui_ctx.clone());
+        // The launch guard switched this launch to OpenGL (launch_guard.rs).
+        if let Some(notice) = rustudio_core::launch_guard::take_notice() {
+            app.ed.warn(notice);
+        }
         rustudio_core::load_trace::mark("app created");
         app
     }
@@ -468,6 +475,7 @@ impl RustudioApp {
             marquee: None,
             marquee_base: Vec::new(),
             marquee_centres: Default::default(),
+            visible_attachments: Default::default(),
             output_view: Default::default(),
             part_drag: None,
             explorer: ExplorerState::default(),
@@ -1004,6 +1012,14 @@ impl Editor {
         }
     }
 
+    /// File > Import Studio Content…: for a machine with no internet, the zip
+    /// the "Studio content" workflow makes (rustudio_core::studio_content).
+    pub fn import_studio_content_dialog(&mut self) {
+        use crate::file_dialog::{Kind, Purpose};
+        let d = rfd::AsyncFileDialog::new().add_filter("Studio content", &["zip"]);
+        self.dialogs.start(Purpose::ImportStudioContent, d, Kind::PickFile);
+    }
+
     pub fn open_folder_dialog(&mut self) {
         use crate::file_dialog::{Kind, Purpose};
         self.dialogs.start(Purpose::OpenFolder, rfd::AsyncFileDialog::new(), Kind::PickFolder);
@@ -1026,6 +1042,7 @@ impl Editor {
         match purpose {
             Purpose::OpenPlace => self.open_path(path),
             Purpose::OpenFolder => self.open_folder(path, true),
+            Purpose::ImportStudioContent => rustudio_core::studio_content::spawn_import(path),
             Purpose::SaveAs => self.save_to(path),
             Purpose::InsertModel => self.insert_model_file(path),
             Purpose::SaveSelection(sel) => match self.game.doc.save_selection_to(&sel, &path) {
@@ -1482,17 +1499,25 @@ impl Editor {
         out
     }
 
-    /// Bounding box (min, max) of the selected parts.
+    /// Bounding box (min, max) of the selected parts and Attachments (an
+    /// Attachment is a point, its world position).
     pub fn selection_bounds(&self) -> Option<(Vec3, Vec3)> {
-        let parts = self.selected_parts();
-        let mut it = parts.iter().filter_map(|r| self.game.scene.get(*r));
-        let first = it.next()?;
-        let mut b = crate::viewport::part_aabb(first);
-        for p in it {
+        let (mut lo, mut hi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
+        let mut found = false;
+        for p in self.selected_parts().iter().filter_map(|r| self.game.scene.get(*r)) {
             let (mn, mx) = crate::viewport::part_aabb(p);
-            b = (b.0.min(mn), b.1.max(mx));
+            lo = lo.min(mn);
+            hi = hi.max(mx);
+            found = true;
         }
-        Some(b)
+        for r in self.selected_attachments() {
+            if let Some(xf) = rustudio_core::attachment::world(&self.game.doc, r, true) {
+                lo = lo.min(xf.pos);
+                hi = hi.max(xf.pos);
+                found = true;
+            }
+        }
+        found.then_some((lo, hi))
     }
 
     pub fn focus_selection(&mut self) {
@@ -2305,6 +2330,8 @@ impl eframe::App for RustudioApp {
             self.egui_ctx = Some(ui.ctx().clone());
         }
         self.frame(ui);
+        // The window is drawing: this launch made it (launch_guard.rs).
+        rustudio_core::launch_guard::frame_drawn();
     }
 }
 

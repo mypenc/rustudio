@@ -201,6 +201,7 @@ pub const FILE: &[M] = &[
     I("Open Folder…", "", "open_folder"),
     I("Save as Project Folder…", "", "export_project"),
     I("Project Settings…", "", "project_settings"),
+    I("Import Studio Content…", "", "import_studio_content"),
     Sub("Recent", &[]),
     S,
     I("Close Place", "Ctrl+F4", "close_place"),

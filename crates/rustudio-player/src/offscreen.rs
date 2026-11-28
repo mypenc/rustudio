@@ -268,6 +268,16 @@ pub fn wgpu_options(bench_mode: bool) -> egui_wgpu::WgpuConfiguration {
         wgpu_setup: {
             let mut setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
             let descriptor = setup.device_descriptor.clone();
+            // Settings > rustudio > Performance > Graphics API: OpenGL, for
+            // drivers that crash with Vulkan / DirectX 12 (the launch guard
+            // chooses it after a launch that never drew). WGPU_BACKEND, which
+            // wgpu reads for the default set, still wins. macOS has no OpenGL.
+            if cfg!(not(target_os = "macos"))
+                && std::env::var_os("WGPU_BACKEND").is_none()
+                && rustudio_core::rustudio_settings::performance_value("graphics_api") == "gl"
+            {
+                setup.instance_descriptor.backends = egui_wgpu::wgpu::Backends::GL;
+            }
             // A real GPU before a software one, a native API before
             // OpenGL (gpu_caps::rank_adapters): on Windows an HD 4600's GL
             // driver before WARP, its only DX12 adapter. The vendored

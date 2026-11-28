@@ -67,6 +67,24 @@ fn sub_label(label: &str) -> egui::RichText {
 }
 
 impl Editor {
+    /// The two instances a Model > Constraint action joins: the first two
+    /// selected Attachments (or Bones) when there are two, else the first
+    /// two selected parts. Studio's ConstraintTool needs two; rustudio
+    /// inserts at once instead of picking them in the view.
+    pub fn constraint_targets(&self) -> Option<(Ref, Ref)> {
+        let mut attachments = self.game.doc.selection.iter().copied().filter(|r| {
+            self.game
+                .doc
+                .class_of(*r)
+                .is_some_and(|c| rustudio_core::doc::is_a(&c, "Attachment"))
+        });
+        if let (Some(a), Some(b)) = (attachments.next(), attachments.next()) {
+            return Some((a, b));
+        }
+        let parts = self.selected_parts();
+        (parts.len() >= 2).then(|| (parts[0], parts[1]))
+    }
+
     /// (enabled, checked) of a menu / ribbon action.
     pub fn action_state(&self, a: &str) -> (bool, Option<bool>) {
         let sel = !self.game.doc.selection.is_empty();
@@ -74,7 +92,7 @@ impl Editor {
         let edit = !playing;
         let open = |n: &str| Some(self.ui.panels_open.contains(n));
         match a {
-            "new" | "open" | "open_roblox" | "open_folder" | "close_place" => (edit, None),
+            "new" | "open" | "open_roblox" | "open_folder" | "close_place" | "import_studio_content" => (edit, None),
             "import_model" => (true, None),
             "import_3d" => {
                 if self.builtin_tools.plugins_enabled {
@@ -225,12 +243,15 @@ impl Editor {
                         .any(|(tb, _)| self.builtin_button_state("ConstraintTool", Some(tb), Some("Place")).1 == Some(true));
                     (any, Some(active))
                 } else {
-                    (false, None)
+                    // The menu opens in edit; each item joins two parts /
+                    // attachments, else lands in the selection or Workspace.
+                    (edit, None)
                 }
             }
             "constraint_menu" => (
-                self.builtin_tools.plugins_enabled
-                    && self.builtin_plugin_button("ConstraintTool", None, None).is_some(),
+                edit
+                    && (!self.builtin_tools.plugins_enabled
+                        || self.builtin_plugin_button("ConstraintTool", None, None).is_some()),
                 None,
             ),
             a if a.starts_with("constraint:") => {
@@ -238,7 +259,9 @@ impl Editor {
                     let tb = &a["constraint:".len()..];
                     self.builtin_button_state("ConstraintTool", Some(tb), Some("Place"))
                 } else {
-                    (false, None)
+                    // Two parts / attachments join; otherwise the class goes
+                    // into the selection, else Workspace, so it is always on.
+                    (edit, None)
                 }
             }
             "show_grid" => (true, Some(self.show_grid)),
@@ -398,6 +421,7 @@ impl Editor {
             "close_place" => self.request(PendingAction::Close),
             "open" => self.request(PendingAction::Open(None)),
             "open_folder" => self.request(PendingAction::OpenFolder),
+            "import_studio_content" => self.import_studio_content_dialog(),
             "export_project" => self.open_export_dialog(),
             "project_settings" => self.open_settings_dialog(),
             "open_roblox" => {
@@ -631,7 +655,18 @@ impl Editor {
             "constraint_menu" => egui::Popup::open_id(ctx, egui::Id::new(crate::studio_ribbon::CONSTRAINT_MENU_ID)),
             a if a.starts_with("constraint:") => {
                 let tb = &a["constraint:".len()..];
-                self.trigger_builtin_plugin_button("ConstraintTool", Some(tb), Some("Place"));
+                if self.builtin_tools.plugins_enabled {
+                    self.trigger_builtin_plugin_button("ConstraintTool", Some(tb), Some("Place"));
+                } else if let Some((a, b)) = self.constraint_targets() {
+                    if let Some(c) = rustudio_core::constraint::insert_between(&mut self.game.doc, tb, a, b) {
+                        self.select(vec![c]);
+                    }
+                } else {
+                    // One object selected: the constraint goes into it; with
+                    // nothing selected, into Workspace (Studio's insert rule).
+                    let parent = self.insert_parent();
+                    self.insert_class(tb, parent);
+                }
             }
             "show_grid" => self.show_grid = !self.show_grid,
             "align_dragged" => self.align_dragged = !self.align_dragged,

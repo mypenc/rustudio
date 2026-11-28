@@ -95,6 +95,24 @@ can use that instead:
 export RUSTUDIO_STUDIO_DIR=~/.var/app/org.vinegarhq.Vinegar/data/vinegar/versions/version-XXXX
 ```
 
+#### No internet on the machine
+
+Run the **Studio content** workflow (Actions tab > Studio content > Run
+workflow) on GitHub. It publishes three zips as release assets (and as a
+workflow artifact):
+
+- `studio-content.zip`: Studio's built-in content (characters, fonts, sounds,
+  player scripts).
+- `material-textures-parts.zip`: the texture packs of the part materials
+  (Grass, Glass, Brick, …). Without them every material draws as one flat
+  colour.
+- `material-textures-terrain.zip`: the same for terrain materials.
+
+Copy them to the offline machine, then use **File > Import Studio Content…**
+for each (or `rustudio --import-studio-content FILE.zip`), and restart
+rustudio. Assets that belong to a particular place (a model or sound by id)
+still need the internet the first time they're used.
+
 ## Platforms
 
 | Platform | Status |
